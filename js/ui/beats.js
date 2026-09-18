@@ -64,20 +64,6 @@ function initCreed(creed) {
   });
 }
 
-/** The chapter marker in the corner. */
-function initChapterMarker(marker, label, actNodes) {
-  const entries = actNodes
-    .map((el) => ({ act: actById(el.dataset.act), text: el.dataset.chapter }))
-    .filter((e) => e.act && e.text && e.text !== '—');
-
-  onTick(() => {
-    const current = entries.find((e) => e.act.active);
-    if (!current) { marker.classList.remove('is-on'); return; }
-    marker.classList.add('is-on');
-    if (label.textContent !== current.text) label.textContent = current.text;
-  });
-}
-
 /** The top progress bar. */
 function initProgressBar(bar) {
   onTick(() => {
@@ -89,6 +75,5 @@ export function initBeats(refs) {
   initStatements(refs.statements);
   initExplodeOverlay(refs.hotspots, refs.ticker, refs.tickerText);
   initCreed(refs.creed);
-  initChapterMarker(refs.chapter, refs.chapterLabel, refs.actNodes);
   initProgressBar(refs.progressBar);
 }

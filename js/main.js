@@ -151,10 +151,7 @@ function boot() {
     ticker: $('#explode-ticker'),
     tickerText: $('#explode-ticker-text'),
     creed: $('[data-creed]'),
-    chapter: $('#chapter'),
-    chapterLabel: $('#chapter-label'),
     progressBar: $('#progress-bar'),
-    actNodes,
   });
 
   // ── Load, then let the film start ────────────────────────────────────
