@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#030303" />
+<title>ZILLOUT — Engineered to move you</title>
+<meta name="description" content="ZILLOUT. A cinematic exploration of form, structure and system." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="css/base.css" />
+<link rel="stylesheet" href="css/film.css" />
+<link rel="stylesheet" href="css/acts.css" />
+
+<link rel="preload" as="image" href="assets/frames/frame-001.jpg" />
+</head>
+<body>
+
+<!-- ══════════════ PRELOADER ══════════════ -->
+<div class="preloader" id="preloader">
+  <div class="preloader__inner">
+    <div class="preloader__mark">
+      <span class="wordmark">Z<i class="wordmark__i">I</i>LLOUT</span>
+    </div>
+    <div class="preloader__meter"><span class="preloader__fill" id="preloader-fill"></span></div>
+    <div class="preloader__meta">
+      <span class="mono" id="preloader-label">Initialising system</span>
+      <span class="mono" id="preloader-count">00</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ FILM (fixed backdrop) ══════════════ -->
+<div class="film" id="film">
+  <canvas class="film__canvas" id="film-canvas"></canvas>
+  <canvas class="fx" id="fx-energy" aria-hidden="true"></canvas>
+  <canvas class="fx" id="fx-visualizer" aria-hidden="true"></canvas>
+  <div class="film__vignette" aria-hidden="true"></div>
+  <div class="film__grain" aria-hidden="true"></div>
+</div>
+
+<div class="cursor" id="cursor" aria-hidden="true"></div>
+
+<!-- ══════════════ NAV ══════════════ -->
+<header class="nav" id="nav">
+  <a class="nav__brand" href="#act-hero" aria-label="ZILLOUT — back to top">
+    <span class="wordmark">Z<i class="wordmark__i">I</i>LLOUT</span>
+  </a>
+  <nav class="nav__links" aria-label="Sections">
+    <a href="#act-form" data-magnetic>Explore</a>
+    <a href="#act-explode" data-magnetic>Structure</a>
+    <a href="#act-system" data-magnetic>System</a>
+    <a href="#act-visualizer" data-magnetic>Motion</a>
+    <a href="#act-philosophy" data-magnetic>Philosophy</a>
+  </nav>
+  <a class="nav__cta" href="#act-finale" data-magnetic><span>Discover ZILLOUT</span></a>
+  <button class="nav__toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span><span></span>
+  </button>
+</header>
+
+<div class="progress" aria-hidden="true"><span class="progress__bar" id="progress-bar"></span></div>
+<div class="chapter" id="chapter" aria-hidden="true"><span class="mono" id="chapter-label"></span></div>
+
+<main id="main">
+
+  <!-- ─────────── 01 · HERO ─────────── -->
+  <section class="act act--hero" id="act-hero" data-act="hero" data-chapter="01 — Form">
+    <div class="act__sticky">
+      <div class="hero">
+        <p class="eyebrow mono" data-reveal data-reveal-delay="200">Chapter 01 — Form</p>
+        <h1 class="display display--xl" data-reveal-words data-reveal-delay="420">This is Zillout.</h1>
+        <p class="lede" data-reveal data-reveal-delay="1100">Engineered to move you.</p>
+        <p class="support" data-reveal data-reveal-delay="1400">Where precision meets expressive design.</p>
+      </div>
+      <div class="scroll-hint" data-reveal data-reveal-delay="2000">
+        <span class="mono">Scroll</span>
+        <span class="scroll-hint__line"><i></i></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 02 · FORM ─────────── -->
+  <section class="act act--form" id="act-form" data-act="form" data-chapter="02 — Built around form">
+    <div class="act__sticky">
+      <div class="wrap">
+        <h2 class="display display--lg" data-reveal-words>Built around form.</h2>
+        <p class="body body--wide" data-reveal>
+          Every surface is a decision. Every seam is intent. What reads as effortless
+          on the outside is the result of everything holding it together underneath.
+        </p>
+        <ol class="chapters" data-stagger>
+          <li><span class="mono chapters__k">01</span><span class="chapters__v">Form</span></li>
+          <li><span class="mono chapters__k">02</span><span class="chapters__v">Structure</span></li>
+          <li><span class="mono chapters__k">03</span><span class="chapters__v">System</span></li>
+          <li><span class="mono chapters__k">04</span><span class="chapters__v">Presence</span></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 03 · ENERGY ─────────── -->
+  <section class="act act--energy" id="act-energy" data-act="energy" data-chapter="03 — Energy">
+    <div class="act__sticky">
+      <div class="wrap wrap--center">
+        <h2 class="display display--lg" data-reveal-words>Energy becomes form.</h2>
+        <p class="body" data-reveal>
+          A single point of charge, expanding outward until it takes shape.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 04 · EXPLODE ─────────── -->
+  <section class="act act--explode" id="act-explode" data-act="explode" data-chapter="04 — Structure">
+    <div class="act__sticky">
+      <h2 class="display display--lg explode__title" data-reveal-words>Nothing here is decoration.</h2>
+      <div class="hotspots" id="hotspots" aria-hidden="true">
+        <button class="hotspot" style="--x:50%;  --y:9%"  data-label="Crown assembly" data-kind="Structure"></button>
+        <button class="hotspot" style="--x:50%;  --y:33%" data-label="Core"           data-kind="Core"></button>
+        <button class="hotspot" style="--x:50.5%;--y:66%" data-label="Power module"   data-kind="Power"></button>
+        <button class="hotspot" style="--x:70%;  --y:34%" data-label="Control board"  data-kind="Control"></button>
+        <button class="hotspot" style="--x:25%;  --y:64%" data-label="Frame plating"  data-kind="Frame"></button>
+        <button class="hotspot" style="--x:12%;  --y:40%" data-label="Interface"      data-kind="Interface"></button>
+      </div>
+      <div class="ticker mono" id="explode-ticker"><span id="explode-ticker-text">Structure</span></div>
+    </div>
+  </section>
+
+  <!-- ─────────── 05 · PURPOSE ─────────── -->
+  <section class="act act--purpose" id="act-purpose" data-act="purpose" data-chapter="05 — Purpose">
+    <div class="act__sticky">
+      <h2 class="display display--lg purpose__title" data-reveal-words>Every detail has a purpose.</h2>
+      <div class="statements">
+        <article class="statement statement--a" data-statement="0">
+          <span class="mono statement__n">01</span>
+          <h3 class="statement__h">Precision</h3>
+          <p class="statement__p">Engineered components working together as one system.</p>
+        </article>
+        <article class="statement statement--b" data-statement="1">
+          <span class="mono statement__n">02</span>
+          <h3 class="statement__h">Power</h3>
+          <p class="statement__p">Designed for presence you can feel before you name it.</p>
+        </article>
+        <article class="statement statement--c" data-statement="2">
+          <span class="mono statement__n">03</span>
+          <h3 class="statement__h">Control</h3>
+          <p class="statement__p">Technology shaped around the way people actually move.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 06 · SYSTEM ─────────── -->
+  <section class="act act--system" id="act-system" data-act="system" data-chapter="06 — The system">
+    <div class="act__sticky">
+      <header class="system__head">
+        <p class="eyebrow mono">The system</p>
+        <h2 class="display display--md" data-reveal-words>Parts, in their own light.</h2>
+      </header>
+      <div class="rail" id="rail">
+        <div class="rail__track" id="rail-track">
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="Crown assembly, lifted clear of the head" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Structure</span>
+              <h3 class="card__h">Crown assembly</h3>
+              <p class="card__p">The uppermost ring, lifted clear of the head on its own axis.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="The primary form at the centre of the system" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Core</span>
+              <h3 class="card__h">Primary form</h3>
+              <p class="card__p">The centre everything else is measured against.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="Sealed chest module at the centre of mass" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Power</span>
+              <h3 class="card__h">Chest module</h3>
+              <p class="card__p">A sealed block seated at the centre of mass.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="Control board and wiring loom in suspension" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Control</span>
+              <h3 class="card__h">Board &amp; loom</h3>
+              <p class="card__p">Routing, held in suspension along its own path.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="Shell plating separated in parallel" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Frame</span>
+              <h3 class="card__h">Plating</h3>
+              <p class="card__p">Shell sections, separated in perfect parallel.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+          <article class="card" tabindex="0">
+            <div class="card__media product-plate"><img src="assets/product/zillout-product.png" alt="Hands, where the system meets the outside" loading="lazy" decoding="async" /></div>
+            <div class="card__body">
+              <span class="mono card__k">Interface</span>
+              <h3 class="card__h">Hands</h3>
+              <p class="card__p">Where the system meets everything outside it.</p>
+              <span class="card__link">Explore <i>&rarr;</i></span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 07 · PRESENCE ─────────── -->
+  <section class="act act--presence" id="act-presence" data-act="presence" data-chapter="07 — Presence">
+    <div class="act__sticky">
+      <div class="parallax" aria-hidden="true">
+        <div class="parallax__l" data-depth="0.10"><img src="assets/product/zillout-product.png" alt="" loading="lazy" decoding="async" /></div>
+        <div class="parallax__l" data-depth="0.26"><img src="assets/product/zillout-product.png" alt="" loading="lazy" decoding="async" /></div>
+        <div class="parallax__l" data-depth="0.44"><img src="assets/product/zillout-product.png" alt="" loading="lazy" decoding="async" /></div>
+      </div>
+      <div class="wrap wrap--center presence__copy">
+        <h2 class="display display--lg" data-reveal-words>Take the form with you.</h2>
+        <p class="body" data-reveal>
+          Seen from every angle, and built to hold up under all of them.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 08 · VISUALIZER ─────────── -->
+  <section class="act act--visualizer" id="act-visualizer" data-act="visualizer" data-chapter="08 — Motion">
+    <div class="act__sticky">
+      <div class="wrap wrap--center">
+        <h2 class="display display--lg" data-reveal-words>See the system.</h2>
+        <p class="body" data-reveal>Move, and it answers.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 09 · PHILOSOPHY ─────────── -->
+  <section class="act act--philosophy" id="act-philosophy" data-act="philosophy" data-chapter="09 — Philosophy">
+    <div class="act__sticky">
+      <blockquote class="creed" data-creed>
+        <span>Made</span> <span>with</span> <span>precision.</span>
+        <br />
+        <span>Driven</span> <span>by</span> <span>feeling.</span>
+      </blockquote>
+    </div>
+  </section>
+
+  <!-- ─────────── 10 · REASSEMBLY ─────────── -->
+  <section class="act act--reassembly" id="act-reassembly" data-act="reassembly" data-chapter="10 — Back to one">
+    <div class="act__sticky">
+      <div class="wrap wrap--center reassembly__copy">
+        <h2 class="display display--md" data-reveal-words>Back to one.</h2>
+        <p class="body" data-reveal>Every part returns to where it belongs.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 11 · FINALE ─────────── -->
+  <section class="act act--finale" id="act-finale" data-act="finale" data-chapter="—">
+    <div class="act__sticky">
+      <div class="finale">
+        <h2 class="display display--xl" data-reveal-words>See more.<br />Feel more.</h2>
+        <p class="lede" data-reveal>Discover the world of ZILLOUT.</p>
+        <div class="finale__cta" data-reveal data-reveal-delay="300">
+          <a class="btn btn--primary" href="#act-hero" data-magnetic><span>Explore Zillout</span></a>
+          <a class="btn btn--ghost" href="#act-system" data-magnetic><span>View the system</span></a>
+        </div>
+        <div class="finale__rule" aria-hidden="true"></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span class="wordmark wordmark--sm">Z<i class="wordmark__i">I</i>LLOUT</span>
+</footer>
+
+<!-- Generated bundle (./build.sh). A classic script, so opening this
+     file directly from disk works as well as serving it. -->
+<script src="js/zillout.build.js" defer></script>
+</body>
+</html>

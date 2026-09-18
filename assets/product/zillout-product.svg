@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600" role="img" aria-label="ZILLOUT — product image placeholder">
+  <!-- PLACEHOLDER. Replace this file with the final ZILLOUT product render.
+       The layout does not depend on this file's dimensions: it is displayed
+       with object-fit: contain inside a fixed plate, so any aspect ratio
+       drops in without touching the CSS. -->
+  <defs>
+    <radialGradient id="floor" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#2f55e8" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#2f55e8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="400" cy="470" rx="230" ry="42" fill="url(#floor)"/>
+  <g transform="translate(400 300) scale(7) translate(-13 -20)">
+    <path d="M16.2665 27.5118H23.3095C23.4693 27.5118 23.5697 27.6887 23.4917 27.8329L20.8209 32.7491C20.7839 32.8171 20.7139 32.8593 20.6386 32.8593H7.14703C6.98456 32.8593 6.88417 32.677 6.96739 32.5341L15.9006 17.01C15.9838 16.8657 15.8821 16.6848 15.7209 16.6848H12.0013C11.9273 16.6848 11.8587 16.644 11.8217 16.5786L9.0227 11.6924C8.9408 11.5482 9.04119 11.3672 9.20234 11.3672H24.4969C24.6581 11.3672 24.7585 11.5454 24.6792 11.6897L16.0855 27.1893C16.0049 27.3335 16.1066 27.5118 16.2665 27.5118Z" fill="#c9cdd6"/>
+    <path d="M5.99441 10.2436L7.83424 13.3834C7.88287 13.4674 7.85921 13.5768 7.77774 13.6288C6.59104 14.3784 5.0193 14.5598 3.43705 13.7955C2.64986 13.4154 2.01381 12.7632 1.64847 11.9602C0.167406 8.70705 2.46982 5.53125 5.5016 5.53125C7.82242 5.53125 9.71481 7.39191 9.81075 9.72474C9.81469 9.82611 9.7319 9.91014 9.63202 9.91014H6.18102C6.01281 9.91014 5.90768 10.0955 5.99441 10.2436Z" fill="#8741FA"/>
+  </g>
+</svg>

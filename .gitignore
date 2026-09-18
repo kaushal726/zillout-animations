@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# Original ezgif export — byte-identical duplicate of assets/frames/,
+# which is what the site actually loads. Keeping both doubles the repo
+# for no benefit.
+ezgif-77f12c286ce3766e-jpg/

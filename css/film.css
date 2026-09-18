@@ -1,0 +1,103 @@
+/* ==========================================================================
+   ZILLOUT — film
+   One fixed canvas carries the whole page. Sections are scroll ranges
+   over it, so the experience reads as a single continuous shot.
+   ========================================================================== */
+
+.film {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 50% 42%, var(--bg-2), var(--bg-0) 68%),
+    var(--bg-0);
+  /* Driven from JS */
+  --film-opacity: 1;
+  --film-scale: 1;
+  --film-shift: 0px;
+  /* Composed in JS so it can be exactly `none` whenever the film is
+     neutral. A live filter on a full-screen canvas forces an extra
+     compositing pass every frame, even at blur(0). */
+  --film-filter: none;
+}
+
+.film__canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: var(--film-opacity);
+  transform: scale(var(--film-scale)) translate3d(0, var(--film-shift), 0);
+  /* Brightness, not blur, is what makes the product recede. */
+  filter: var(--film-filter);
+  transform-origin: 50% 46%;
+  will-change: transform, opacity;
+}
+
+/* ── FX layers ────────────────────────────────────────────────────────── */
+/* Above the vignette. Underneath it, the corner falloff was dimming the
+   outer half of the instrument by 50% — the reason it read as faint. */
+.fx {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.9s var(--ease-out);
+  will-change: opacity;
+}
+.fx.is-on { opacity: 1; }
+
+/* ── Vignette — keeps the edges heavy, centre breathing ───────────────── */
+.film__vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    /* Corners fall away, the centre keeps breathing */
+    radial-gradient(80% 64% at 50% 46%, transparent 34%, rgba(3, 3, 3, 0.5) 74%, rgba(3, 3, 3, 0.9) 100%),
+    /* Scrims that buy legibility for the nav above and the copy below */
+    linear-gradient(180deg,
+      rgba(3, 3, 3, 0.82) 0%,
+      rgba(3, 3, 3, 0.28) 15%,
+      transparent 32%,
+      transparent 50%,
+      rgba(3, 3, 3, 0.58) 80%,
+      rgba(3, 3, 3, 0.9) 100%);
+}
+
+/* ── Grain — analogue tooth over the render ───────────────────────────── */
+.film__grain {
+  position: absolute;
+  inset: -120px;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0.16;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grain 900ms steps(4) infinite;
+}
+
+@keyframes grain {
+  0%   { transform: translate3d(0, 0, 0); }
+  25%  { transform: translate3d(-14px, 8px, 0); }
+  50%  { transform: translate3d(10px, -12px, 0); }
+  75%  { transform: translate3d(-6px, -6px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .film__grain { animation: none; }
+}
+
+/* Grain is a luxury, not a necessity — drop it on small screens */
+@media (max-width: 640px) {
+  .film__grain { opacity: 0.1; animation: none; }
+}
