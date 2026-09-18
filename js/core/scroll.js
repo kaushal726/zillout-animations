@@ -8,7 +8,10 @@
 import { onTick } from './ticker.js';
 import { clamp, damp, lerp, prefersReducedMotion, onResize } from './utils.js';
 
-const SMOOTHING = 0.12;
+/* The sticky layout follows the raw scroll position while the film follows
+   this eased one. Too much easing and the two visibly disagree, which reads
+   as the page lagging behind the wheel rather than as weight. */
+const SMOOTHING = 0.2;
 
 export const scroll = {
   y: 0,          // raw scrollY
@@ -27,7 +30,16 @@ let maxScroll = 1;
 export function registerActs(nodes) {
   acts.length = 0;
   nodes.forEach((el) => {
-    acts.push({ id: el.dataset.act, el, top: 0, span: 1, progress: 0, active: false });
+    acts.push({
+      id: el.dataset.act,
+      el,
+      sticky: el.firstElementChild,
+      top: 0,
+      height: 1,
+      span: 1,
+      progress: 0,
+      active: false,
+    });
   });
   measure();
 }
@@ -39,10 +51,13 @@ export function measure() {
   maxScroll = Math.max(1, document.documentElement.scrollHeight - scroll.vh);
 
   for (const act of acts) {
-    const top = act.el.offsetTop;
+    // Every layout read happens here and nowhere else. Reading geometry
+    // from inside the animation loop forces a synchronous reflow on each
+    // access, and there is one of these per act per frame to get wrong.
+    act.top = act.el.offsetTop;
+    act.height = act.el.offsetHeight;
     // While an act's sticky child is pinned, the act travels (height - vh).
-    act.top = top;
-    act.span = Math.max(1, act.el.offsetHeight - scroll.vh);
+    act.span = Math.max(1, act.height - scroll.vh);
   }
 }
 
@@ -79,7 +94,7 @@ function update(dt) {
 
   for (const act of acts) {
     act.progress = clamp((scroll.smooth - act.top) / act.span);
-    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.el.offsetHeight;
+    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.height;
   }
 }
 

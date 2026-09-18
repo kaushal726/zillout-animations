@@ -101,7 +101,10 @@ function sizeCanvas(canvas, ctx, maxDpr = 2) {
    scrollbars, keyboard paging or mobile momentum. */
 
 
-const SMOOTHING = 0.12;
+/* The sticky layout follows the raw scroll position while the film follows
+   this eased one. Too much easing and the two visibly disagree, which reads
+   as the page lagging behind the wheel rather than as weight. */
+const SMOOTHING = 0.2;
 
 const scroll = {
   y: 0,          // raw scrollY
@@ -120,7 +123,16 @@ let maxScroll = 1;
 function registerActs(nodes) {
   acts.length = 0;
   nodes.forEach((el) => {
-    acts.push({ id: el.dataset.act, el, top: 0, span: 1, progress: 0, active: false });
+    acts.push({
+      id: el.dataset.act,
+      el,
+      sticky: el.firstElementChild,
+      top: 0,
+      height: 1,
+      span: 1,
+      progress: 0,
+      active: false,
+    });
   });
   measure();
 }
@@ -132,10 +144,13 @@ function measure() {
   maxScroll = Math.max(1, document.documentElement.scrollHeight - scroll.vh);
 
   for (const act of acts) {
-    const top = act.el.offsetTop;
+    // Every layout read happens here and nowhere else. Reading geometry
+    // from inside the animation loop forces a synchronous reflow on each
+    // access, and there is one of these per act per frame to get wrong.
+    act.top = act.el.offsetTop;
+    act.height = act.el.offsetHeight;
     // While an act's sticky child is pinned, the act travels (height - vh).
-    act.top = top;
-    act.span = Math.max(1, act.el.offsetHeight - scroll.vh);
+    act.span = Math.max(1, act.height - scroll.vh);
   }
 }
 
@@ -172,7 +187,7 @@ function update(dt) {
 
   for (const act of acts) {
     act.progress = clamp((scroll.smooth - act.top) / act.span);
-    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.el.offsetHeight;
+    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.height;
   }
 }
 
@@ -426,6 +441,12 @@ class FrameLoader {
 /* The film canvas — draws one still, correctly framed, at device resolution. */
 
 
+/* The stills are 1920px wide. Filling a retina backing store means drawing
+   them at 2x their own resolution — four times the pixels to push, for no
+   detail that exists in the source. Cap the backing store at the source
+   width and let the compositor do the final upscale, which is free. */
+const SOURCE_WIDTH = 1920;
+
 class FilmCanvas {
   constructor(canvas) {
     this.canvas = canvas;
@@ -435,7 +456,8 @@ class FilmCanvas {
   }
 
   resize() {
-    const { w, h } = sizeCanvas(this.canvas, this.ctx);
+    const maxDpr = clamp(SOURCE_WIDTH / innerWidth, 1, 2);
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, maxDpr);
     this.w = w;
     this.h = h;
     // 'high' forces an expensive resample on every blit. The source is
@@ -653,7 +675,9 @@ class EnergyField {
   }
 
   resize() {
-    const { w, h } = sizeCanvas(this.canvas, this.ctx);
+    // 1.5x is indistinguishable from full retina for thin strokes,
+    // and clears less than half the pixels each frame.
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, 1.5);
     this.w = w;
     this.h = h;
     this.max = Math.hypot(w, h) * 0.5;
@@ -768,7 +792,9 @@ class Visualizer {
   }
 
   resize() {
-    const { w, h } = sizeCanvas(this.canvas, this.ctx);
+    // 1.5x is indistinguishable from full retina for thin strokes,
+    // and clears less than half the pixels each frame.
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, 1.5);
     this.w = w;
     this.h = h;
     const narrow = w < 780;
@@ -1052,32 +1078,51 @@ function initCursor(el) {
 
 const RADIUS = 90;
 const PULL = 0.32;
+/* How often geometry is re-read. Reading layout in the animation loop
+   forces a synchronous reflow, and doing it per element per frame was
+   costing several forced layouts every single frame. These elements barely
+   move, so measuring a few times a second is indistinguishable. */
+const MEASURE_INTERVAL = 120;
 
 function initMagnetic(nodes) {
   if (isCoarsePointer() || prefersReducedMotion()) return;
 
-  const items = nodes.map((el) => ({ el, x: 0, y: 0, tx: 0, ty: 0 }));
+  const items = nodes.map((el) => ({ el, x: 0, y: 0, cx: 0, cy: 0, reach: 0 }));
   const pointer = { x: -9999, y: -9999 };
+  let lastMeasure = 0;
+
+  const measure = () => {
+    for (const item of items) {
+      const r = item.el.getBoundingClientRect();
+      item.cx = r.left + r.width / 2;
+      item.cy = r.top + r.height / 2;
+      item.reach = RADIUS + Math.max(r.width, r.height) / 2;
+    }
+  };
+
+  measure();
+  onResize(measure);
 
   addEventListener('pointermove', (e) => {
     pointer.x = e.clientX;
     pointer.y = e.clientY;
   }, { passive: true });
 
-  onTick((dt) => {
+  onTick((dt, now) => {
+    // One batched read, well apart from the writes below.
+    if (now - lastMeasure > MEASURE_INTERVAL) {
+      lastMeasure = now;
+      measure();
+    }
+
     const k = damp(0.16, dt);
     for (const item of items) {
-      const r = item.el.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      const dx = pointer.x - cx;
-      const dy = pointer.y - cy;
-      const near = Math.hypot(dx, dy) < RADIUS + Math.max(r.width, r.height) / 2;
+      const dx = pointer.x - item.cx;
+      const dy = pointer.y - item.cy;
+      const near = Math.hypot(dx, dy) < item.reach;
 
-      item.tx = near ? dx * PULL : 0;
-      item.ty = near ? dy * PULL : 0;
-      item.x = lerp(item.x, item.tx, k);
-      item.y = lerp(item.y, item.ty, k);
+      item.x = lerp(item.x, near ? dx * PULL : 0, k);
+      item.y = lerp(item.y, near ? dy * PULL : 0, k);
 
       item.el.style.transform =
         Math.abs(item.x) < 0.05 && Math.abs(item.y) < 0.05
@@ -1480,9 +1525,15 @@ function boot() {
 
     // The focus shift: typography recedes while the product leads, and
     // returns as the product steps back. Only the act in frame is touched.
-    const sticky = act.el.firstElementChild;
+    const sticky = act.sticky;
     if (sticky !== activeSticky) {
-      if (activeSticky) activeSticky.style.removeProperty('--text-focus');
+      if (activeSticky) {
+        activeSticky.style.removeProperty('--text-focus');
+        activeSticky.classList.remove('is-live');
+      }
+      // Promote only the act on screen, so its opacity animates on the
+      // compositor instead of repainting a full-viewport block of text.
+      sticky.classList.add('is-live');
       activeSticky = sticky;
     }
     sticky.style.setProperty('--text-focus', sampleStops(cue.text, p).toFixed(3));

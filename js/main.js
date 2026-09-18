@@ -115,9 +115,15 @@ function boot() {
 
     // The focus shift: typography recedes while the product leads, and
     // returns as the product steps back. Only the act in frame is touched.
-    const sticky = act.el.firstElementChild;
+    const sticky = act.sticky;
     if (sticky !== activeSticky) {
-      if (activeSticky) activeSticky.style.removeProperty('--text-focus');
+      if (activeSticky) {
+        activeSticky.style.removeProperty('--text-focus');
+        activeSticky.classList.remove('is-live');
+      }
+      // Promote only the act on screen, so its opacity animates on the
+      // compositor instead of repainting a full-viewport block of text.
+      sticky.classList.add('is-live');
       activeSticky = sticky;
     }
     sticky.style.setProperty('--text-focus', sampleStops(cue.text, p).toFixed(3));

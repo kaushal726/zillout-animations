@@ -1,7 +1,13 @@
 /* The film canvas — draws one still, correctly framed, at device resolution. */
 
-import { lerp, mapRange } from '../core/utils.js';
+import { clamp, lerp, mapRange } from '../core/utils.js';
 import { sizeCanvas } from '../core/hidpi.js';
+
+/* The stills are 1920px wide. Filling a retina backing store means drawing
+   them at 2x their own resolution — four times the pixels to push, for no
+   detail that exists in the source. Cap the backing store at the source
+   width and let the compositor do the final upscale, which is free. */
+const SOURCE_WIDTH = 1920;
 
 export class FilmCanvas {
   constructor(canvas) {
@@ -12,7 +18,8 @@ export class FilmCanvas {
   }
 
   resize() {
-    const { w, h } = sizeCanvas(this.canvas, this.ctx);
+    const maxDpr = clamp(SOURCE_WIDTH / innerWidth, 1, 2);
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, maxDpr);
     this.w = w;
     this.h = h;
     // 'high' forces an expensive resample on every blit. The source is

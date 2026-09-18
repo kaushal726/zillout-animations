@@ -23,6 +23,9 @@ main { position: relative; z-index: 10; }
   padding: var(--nav-h) var(--gutter) clamp(2rem, 6vh, 4.5rem);
   overflow: hidden;
 }
+/* Only ever set on the act currently in frame — promoting all eleven would
+   cost eleven full-viewport layers for no gain. */
+.act__sticky.is-live { will-change: opacity; }
 
 /* Act lengths — the pacing of the film */
 .act--hero       { height: 150vh; }

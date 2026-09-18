@@ -20,7 +20,9 @@ export class EnergyField {
   }
 
   resize() {
-    const { w, h } = sizeCanvas(this.canvas, this.ctx);
+    // 1.5x is indistinguishable from full retina for thin strokes,
+    // and clears less than half the pixels each frame.
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, 1.5);
     this.w = w;
     this.h = h;
     this.max = Math.hypot(w, h) * 0.5;
