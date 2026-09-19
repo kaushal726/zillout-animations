@@ -1,10 +1,17 @@
+import { readFileSync } from 'node:fs';
 globalThis.matchMedia = () => ({ matches: false, addEventListener(){}, removeEventListener(){} });
 const B = new URL('../js/film/', import.meta.url).href;
 const { TIMELINE } = await import(B+'timeline.js');
 const { sampleStops } = await import(B+'stops.js');
 const VH = 900;
-const HEIGHTS = { hero:150, form:210, energy:140, explode:320, purpose:210, system:280,
-                  presence:200, visualizer:200, philosophy:180, reassembly:300, finale:170 };
+// Desktop act heights, read from the stylesheet so this can never drift
+// from what the page actually does. The first rule per act is desktop;
+// the later ones sit inside media queries.
+const css = readFileSync(new URL('../css/acts.css', import.meta.url), 'utf8');
+const HEIGHTS = {};
+for (const [, id, vh] of css.matchAll(/\.act--([a-z]+)\s*\{\s*height:\s*(\d+)vh;/g)) {
+  if (!(id in HEIGHTS)) HEIGHTS[id] = Number(vh);
+}
 const rows = TIMELINE.map(act => {
   const span = Math.max(1, HEIGHTS[act.id]/100*VH - VH);
   let changes = 0, prev = null, maxRun = 0, run = 0, peakOpacity = 0;

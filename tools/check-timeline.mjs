@@ -4,7 +4,6 @@ const { TIMELINE } = await import(BASE + 'timeline.js');
 const { sampleStops } = await import(BASE + 'stops.js');
 
 const SAMPLES = 200;
-let maxBlur = 0, maxBlurAt = '';
 const clashes = [];
 const rows = [];
 
@@ -14,12 +13,16 @@ for (const act of TIMELINE) {
     const p = i / SAMPLES;
     const o = sampleStops(act.opacity, p);
     const t = sampleStops(act.text, p);
-    const b = sampleStops(act.blur, p);
     const f = sampleStops(act.frames, p, false);
     frames.push(f);
-    if (b > maxBlur) { maxBlur = b; maxBlurAt = `${act.id}@${p.toFixed(2)}`; }
     // The invariant: never both fully present at once.
-    if (o > 0.75 && t > 0.75 && act.id !== 'hero' && act.id !== 'finale') {
+    // hero / finale: the brand-film bookends, where line and product are
+    // meant to share the frame. reveal, while the light is still travelling
+    // (0.18–0.8): the shade hides most of the product whatever its opacity,
+    // so opacity alone overstates its presence. Outside that window the
+    // reveal is held to the same rule as every other act.
+    const exempt = act.id === 'hero' || act.id === 'finale' || (act.cue === 'reveal' && p >= 0.18 && p < 0.8);
+    if (o > 0.75 && t > 0.75 && !exempt) {
       clashes.push(`${act.id}@${p.toFixed(2)} product=${o.toFixed(2)} text=${t.toFixed(2)}`);
     }
     minText = Math.min(minText, t); maxText = Math.max(maxText, t);
@@ -44,5 +47,6 @@ for (const act of TIMELINE) {
 }
 
 console.table(rows);
-console.log(`\nmax blur: ${maxBlur.toFixed(2)}px  (${maxBlurAt})   [cap 1.5px]`);
+const blurred = TIMELINE.filter((a) => a.blur).map((a) => a.id);
+console.log(`\nfilm blur channels: ${blurred.length ? blurred.join(', ') : 'none (removed: a live filter on the film costs a compositing pass every frame)'}`);
 console.log(`hierarchy clashes (product>0.75 AND text>0.75): ${clashes.length ? clashes.slice(0,5).join(', ') : 'none'}`);

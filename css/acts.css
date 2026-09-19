@@ -11,10 +11,6 @@ main { position: relative; z-index: 10; }
 .act__sticky {
   position: sticky;
   top: 0;
-  /* Set per-frame from the timeline. No CSS transition on purpose: the
-     value is already eased across scroll, and a transition here would
-     lag behind the scrub instead of smoothing it. */
-  opacity: var(--text-focus, 1);
   height: 100vh;
   height: 100svh;
   display: flex;
@@ -23,21 +19,29 @@ main { position: relative; z-index: 10; }
   padding: var(--nav-h) var(--gutter) clamp(2rem, 6vh, 4.5rem);
   overflow: hidden;
 }
-/* Only ever set on the act currently in frame — promoting all eleven would
-   cost eleven full-viewport layers for no gain. */
-.act__sticky.is-live { will-change: opacity; }
+/* The focus shift. --text-focus is set per frame on the sticky and
+   inherited. It applies to the copy only — never to .overlay elements
+   (hotspots, callout, marker), which have to stay fully legible precisely
+   when the product has the frame and the copy has stepped back.
+   No CSS transition on purpose: the value is already eased across scroll,
+   and a transition would lag behind the scrub instead of smoothing it. */
+.act__sticky > :not(.overlay) { opacity: var(--text-focus, 1); }
+/* Only acts on screen are promoted — never all thirteen at once. */
+.act__sticky.is-live > :not(.overlay) { will-change: opacity; }
 
 /* Act lengths — the pacing of the film */
 .act--hero       { height: 150vh; }
-.act--form       { height: 210vh; }
-.act--energy     { height: 140vh; }
+.act--form       { height: 190vh; }
+.act--energy     { height: 240vh; }
 .act--explode    { height: 320vh; }
 .act--purpose    { height: 210vh; }
-.act--system     { height: 280vh; }
-.act--presence   { height: 200vh; }
-.act--visualizer { height: 200vh; }
-.act--philosophy { height: 180vh; }
-.act--reassembly { height: 300vh; }
+.act--system     { height: 320vh; }
+.act--presence   { height: 170vh; }
+.act--visualizer { height: 180vh; }
+.act--silence    { height: 160vh; }
+.act--philosophy { height: 150vh; }
+.act--reassembly { height: 270vh; }
+.act--reveal     { height: 240vh; }
 .act--finale     { height: 170vh; }
 
 .wrap { width: 100%; max-width: 1400px; margin: 0 auto; }
@@ -127,20 +131,27 @@ main { position: relative; z-index: 10; }
   letter-spacing: -0.04em;
 }
 
-.hotspots { position: absolute; inset: 0; pointer-events: none; }
+.hotspots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Opacity is written from scroll by ui/hotspots.js. */
+  opacity: 0;
+}
 
+/* Placed each frame by ui/hotspots.js, from the part's art-space position
+   through the live camera. The negative margin centres the 44px target. */
 .hotspot {
   position: absolute;
-  left: var(--x);
-  top: var(--y);
+  left: 0;
+  top: 0;
   width: 44px;
   height: 44px;
-  transform: translate(-50%, -50%);
-  pointer-events: auto;
-  opacity: 0;
-  transition: opacity 0.8s var(--ease-out);
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  will-change: transform;
 }
-.hotspots.is-on .hotspot { opacity: 1; }
+.hotspots.is-on .hotspot { pointer-events: auto; }
 
 .hotspot::before {
   content: "";
@@ -151,7 +162,7 @@ main { position: relative; z-index: 10; }
   border-radius: 50%;
   background: var(--blue-lite);
   box-shadow: 0 0 12px rgba(110, 140, 255, 0.9);
-  transition: transform 0.7s var(--ease-out);
+  transition: transform var(--t-section) var(--ease-out);
 }
 .hotspot::after {
   content: "";
@@ -163,26 +174,81 @@ main { position: relative; z-index: 10; }
   border-radius: 50%;
   transform: scale(0.55);
   opacity: 0;
-  transition: transform 0.9s var(--ease-out), opacity 0.9s var(--ease-out);
+  transition: transform var(--t-section) var(--ease-out), opacity var(--t-section) var(--ease-out);
 }
-.hotspot:hover::before, .hotspot:focus-visible::before { transform: scale(1.6); }
-.hotspot:hover::after,  .hotspot:focus-visible::after  { transform: scale(1); opacity: 1; }
+/* A slow breath, so the markers read as live without asking for attention. */
+.hotspots.is-on .hotspot::after { animation: hotspot-breath 3.6s var(--ease-io) infinite; }
+.hotspot:hover::before, .hotspot:focus-visible::before, .hotspot[aria-pressed="true"]::before { transform: scale(1.6); }
+.hotspot:hover::after, .hotspot:focus-visible::after, .hotspot[aria-pressed="true"]::after {
+  animation: none;
+  transform: scale(1);
+  opacity: 1;
+}
+.hotspot[aria-pressed="true"]::after { border-color: rgba(110, 140, 255, 0.7); }
 
-.ticker {
-  position: absolute;
-  right: var(--gutter);
-  bottom: clamp(2rem, 6vh, 4.5rem);
-  padding: 0.6rem 1rem;
-  border: 1px solid var(--line);
-  border-radius: 100px;
-  color: var(--ink-dim);
-  background: rgba(3, 3, 3, 0.4);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  opacity: 0;
-  transition: opacity 0.8s var(--ease-out);
+@keyframes hotspot-breath {
+  0%, 100% { transform: scale(0.55); opacity: 0; }
+  50%      { transform: scale(0.8);  opacity: 0.5; }
 }
-.ticker.is-on { opacity: 1; }
+
+/* The callout: a hairline leader out to a small technical label. It rides
+   with the part under the light; opacity and --focus are set per frame. */
+.callout {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  --focus: 0;
+}
+.callout__lead {
+  position: absolute;
+  left: 16px;
+  top: 0;
+  width: 56px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(110, 140, 255, 0.75), rgba(110, 140, 255, 0.15));
+}
+.callout__body {
+  position: absolute;
+  left: 80px;
+  top: 0;
+  transform: translateY(-50%);
+  width: min(248px, 60vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--line);
+}
+.callout--left .callout__lead {
+  left: auto;
+  right: 16px;
+  background: linear-gradient(270deg, rgba(110, 140, 255, 0.75), rgba(110, 140, 255, 0.15));
+}
+.callout--left .callout__body {
+  left: auto;
+  right: 80px;
+  align-items: flex-end;
+  text-align: right;
+  padding-left: 0;
+  padding-right: 0.9rem;
+  border-left: 0;
+  border-right: 1px solid var(--line);
+}
+.callout__kind { color: var(--blue-lite); }
+.callout__label { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); }
+.callout__note { font-size: 0.82rem; line-height: 1.5; color: var(--ink-dim); }
+.callout__focus {
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  opacity: var(--focus);
+  transform: translateY(calc((1 - var(--focus)) * 6px));
+}
+.callout__coords { margin-top: 0.2rem; font-size: 9.5px; color: var(--ink-ghost); }
 
 /* ─────────── 05 · PURPOSE ─────────── */
 .act--purpose .act__sticky { justify-content: flex-start; }
@@ -201,11 +267,10 @@ main { position: relative; z-index: 10; }
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  opacity: 0;
-  transform: translateY(22px);
-  transition: opacity 1.2s var(--ease-out), transform 1.2s var(--ease-out);
+  /* --reveal is written from scroll by ui/beats.js. */
+  opacity: var(--reveal, 0);
+  transform: translate3d(0, calc((1 - var(--reveal, 0)) * 22px), 0);
 }
-.statement.is-on { opacity: 1; transform: none; }
 
 .statement--a { left: var(--gutter);  top: 42%; }
 .statement--b { right: var(--gutter); top: 30%; text-align: right; align-items: flex-end; }
@@ -235,6 +300,39 @@ main { position: relative; z-index: 10; }
   gap: 0.8rem;
 }
 
+/* Engineering marker for the crown-ring transition — hairline alignment
+   axes through the part, a ring sized to it, and a figure label. */
+.marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  --r: 60px;
+}
+.marker__h,
+.marker__v { position: absolute; background: rgba(150, 178, 255, 0.14); }
+.marker__h { left: -100vw; width: 200vw; top: 0; height: 1px; }
+.marker__v { top: -100vh; height: 200vh; left: 0; width: 1px; }
+.marker__ring {
+  position: absolute;
+  left: calc(var(--r) * -1);
+  top: calc(var(--r) * -1);
+  width: calc(var(--r) * 2);
+  height: calc(var(--r) * 2);
+  border: 1px solid rgba(150, 178, 255, 0.45);
+  border-radius: 50%;
+}
+.marker__label,
+.marker__coords {
+  position: absolute;
+  left: calc(var(--r) + 14px);
+  white-space: nowrap;
+}
+.marker__label { top: -1.4em; color: var(--ink-dim); }
+.marker__coords { top: 0.5em; color: var(--ink-faint); }
+
 .rail { width: 100%; overflow: hidden; }
 .rail__track {
   display: flex;
@@ -250,8 +348,14 @@ main { position: relative; z-index: 10; }
   border-radius: 14px;
   overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.006));
-  transition: border-color 0.9s var(--ease-out), transform 0.9s var(--ease-out);
+  transition:
+    border-color var(--t-section) var(--ease-out),
+    transform var(--t-section) var(--ease-out),
+    opacity var(--t-section) var(--ease-out);
 }
+/* The showroom: the card under the pointer is selected, the rest step back. */
+.rail__track:has(.card:hover) .card:not(:hover),
+.rail__track:has(.card:focus-visible) .card:not(:focus-visible) { opacity: 0.45; }
 .card:hover, .card:focus-visible {
   border-color: rgba(110, 140, 255, 0.3);
   transform: translateY(-6px);
@@ -264,21 +368,35 @@ main { position: relative; z-index: 10; }
   background-color: #000;
 }
 
-/* Light wash that answers the hover */
+/* On selection the light in the plate changes and a faint sound-wave
+   pattern rises behind the product. One pseudo-element carries both, so
+   the plate's ::before stays free for its floor light. */
 .card__media::after {
   content: "";
   position: absolute;
   inset: 0;
   z-index: 2;
-  background: radial-gradient(90% 70% at 50% 100%, rgba(47, 85, 232, 0.4), transparent 65%);
+  background:
+    repeating-radial-gradient(circle at 50% 56%, rgba(150, 178, 255, 0.13) 0 1px, transparent 1.5px 15px),
+    radial-gradient(90% 70% at 50% 100%, rgba(47, 85, 232, 0.4), transparent 65%);
+  -webkit-mask-image: radial-gradient(circle at 50% 56%, #000 0 28%, transparent 72%);
+          mask-image: radial-gradient(circle at 50% 56%, #000 0 28%, transparent 72%);
   opacity: 0;
-  transition: opacity 1.1s var(--ease-out);
+  scale: 0.92;
+  transition: opacity var(--t-section) var(--ease-out), scale var(--t-cinematic) var(--ease-out);
 }
-.card:hover .card__media::after, .card:focus-visible .card__media::after { opacity: 1; }
+.card:hover .card__media::after, .card:focus-visible .card__media::after { opacity: 1; scale: 1; }
 
 .card__body { padding: 1.15rem 1.25rem 1.35rem; display: flex; flex-direction: column; gap: 0.5rem; }
 .card__k { color: var(--blue-lite); opacity: 0.75; }
-.card__h { font-size: 1.08rem; font-weight: 600; letter-spacing: -0.025em; }
+.card__h {
+  font-size: 1.08rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: rgba(244, 245, 247, 0.8);
+  transition: color var(--t-section) var(--ease-out);
+}
+.card:hover .card__h, .card:focus-visible .card__h { color: var(--ink); }
 .card__p { font-size: 0.84rem; line-height: 1.55; color: var(--ink-faint); }
 .card__link {
   margin-top: 0.35rem;
@@ -289,7 +407,7 @@ main { position: relative; z-index: 10; }
   display: inline-flex;
   gap: 0.5rem;
 }
-.card__link i { font-style: normal; transition: transform 0.7s var(--ease-out); }
+.card__link i { font-style: normal; transition: transform var(--t-section) var(--ease-out); }
 .card:hover .card__link i, .card:focus-visible .card__link i { transform: translateX(5px); }
 
 /* ── Product plate ────────────────────────────────────────────────────
@@ -323,10 +441,11 @@ main { position: relative; z-index: 10; }
   object-fit: contain;
   object-position: center;
   scale: 1;
-  transition: scale 1.3s var(--ease-out);
+  transition: scale var(--t-cinematic) var(--ease-out);
 }
-/* A soft floor so the object reads as sitting in the dark, not pasted on */
-.product-plate::after {
+/* A soft floor so the object reads as sitting in the dark, not pasted on.
+   ::before, because a card's ::after is its hover light. */
+.product-plate::before {
   content: "";
   position: absolute;
   left: 50%; bottom: 12%;
@@ -335,7 +454,7 @@ main { position: relative; z-index: 10; }
   background: radial-gradient(50% 50% at 50% 50%, rgba(47, 85, 232, 0.28), transparent 72%);
   pointer-events: none;
 }
-.card:hover .product-plate img, .card:focus-visible .product-plate img { scale: 1.04; }
+.card:hover .product-plate img, .card:focus-visible .product-plate img { scale: 1.06; }
 
 /* Inside a card the plate simply fills the media box, which already owns
    the aspect ratio — no nested aspect boxes. */
@@ -382,7 +501,31 @@ main { position: relative; z-index: 10; }
 .act--visualizer .display { font-size: clamp(1.7rem, 3.2vw, 3.4rem); }
 .act--visualizer .body { max-width: 30ch; }
 
-/* ─────────── 09 · PHILOSOPHY ─────────── */
+/* ─────────── 09 · SILENCE ─────────── */
+.act--silence .act__sticky { align-items: center; }
+.silence {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.1rem;
+  text-align: center;
+}
+/* Opacity and a 10px settle are driven from ui/beats.js. */
+.silence__listen {
+  font-size: clamp(1.2rem, 1.8vw, 1.6rem);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  opacity: 0;
+}
+.silence__wait {
+  font-size: clamp(0.9rem, 1.05vw, 1rem);
+  letter-spacing: -0.005em;
+  color: var(--ink-faint);
+  opacity: 0;
+}
+
+/* ─────────── 10 · PHILOSOPHY ─────────── */
 .act--philosophy .act__sticky { align-items: center; }
 
 .creed {
@@ -395,16 +538,12 @@ main { position: relative; z-index: 10; }
 }
 .creed span {
   display: inline-block;
-  opacity: 0;
-  filter: blur(9px);
-  transform: translateY(12px);
-  transition: opacity 1.6s var(--ease-out), filter 1.6s var(--ease-out), transform 1.6s var(--ease-out);
-}
-.creed span.is-on {
-  opacity: 1;
-  filter: blur(0);
-  transform: none;
-  text-shadow: 0 0 34px rgba(110, 140, 255, 0.28);
+  /* --reveal is written from scroll by ui/beats.js, one word at a time.
+     The blur is kept — it is on one small word at a time, not a layer. */
+  opacity: var(--reveal, 0);
+  filter: blur(calc((1 - var(--reveal, 0)) * 9px));
+  transform: translate3d(0, calc((1 - var(--reveal, 0)) * 12px), 0);
+  text-shadow: 0 0 34px rgba(110, 140, 255, calc(var(--reveal, 0) * 0.28));
 }
 
 /* ─────────── 10 · REASSEMBLY ─────────── */
@@ -412,7 +551,37 @@ main { position: relative; z-index: 10; }
 .reassembly__copy { padding-bottom: clamp(2rem, 8vh, 5rem); }
 .reassembly__copy .body { max-width: 32ch; }
 
-/* ─────────── 11 · FINALE ─────────── */
+/* ─────────── 12 · REVEAL ─────────── */
+/* The line sits low, so the travelling light has the product to itself. */
+.act--reveal .act__sticky { justify-content: flex-end; }
+.reveal {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding-bottom: clamp(2rem, 9vh, 6rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+}
+.reveal__tag {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: var(--ink-faint);
+}
+/* Alignment hairlines either side of the figure tag. */
+.reveal__tag::before,
+.reveal__tag::after {
+  content: "";
+  width: clamp(40px, 8vw, 120px);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line));
+}
+.reveal__tag::after { background: linear-gradient(270deg, transparent, var(--line)); }
+
+/* ─────────── 13 · FINALE ─────────── */
 .finale {
   text-align: center;
   display: flex;
@@ -448,16 +617,18 @@ main { position: relative; z-index: 10; }
 }
 
 @media (max-width: 860px) {
-  .act--hero       { height: 160vh; }
-  .act--form       { height: 180vh; }
-  .act--energy     { height: 150vh; }
-  .act--explode    { height: 240vh; }
-  .act--purpose    { height: 220vh; }
-  .act--system     { height: 230vh; }
-  .act--presence   { height: 170vh; }
-  .act--visualizer { height: 165vh; }
-  .act--philosophy { height: 150vh; }
-  .act--reassembly { height: 230vh; }
+  .act--hero       { height: 120vh; }
+  .act--form       { height: 160vh; }
+  .act--energy     { height: 190vh; }
+  .act--explode    { height: 250vh; }
+  .act--purpose    { height: 200vh; }
+  .act--system     { height: 260vh; }
+  .act--presence   { height: 150vh; }
+  .act--visualizer { height: 150vh; }
+  .act--silence    { height: 130vh; }
+  .act--philosophy { height: 130vh; }
+  .act--reassembly { height: 210vh; }
+  .act--reveal     { height: 190vh; }
   .act--finale     { height: 150vh; }
 
   .act__sticky { padding-inline: var(--gutter); }
@@ -489,7 +660,26 @@ main { position: relative; z-index: 10; }
   .parallax__l:nth-child(1) { width: 46vw; top: 12%; }
   .parallax__l:nth-child(2) { width: 42vw; top: 34%; }
 
-  .ticker { left: var(--gutter); right: auto; }
+  /* The callout docks at the foot of the frame instead of following the
+     part — beside a small portrait band there is no room for a leader. */
+  .callout {
+    left: var(--gutter);
+    right: var(--gutter);
+    top: auto;
+    bottom: clamp(2rem, 8vh, 4rem);
+  }
+  .callout__lead { display: none; }
+  .callout__body,
+  .callout--left .callout__body {
+    position: static;
+    transform: none;
+    width: auto;
+    align-items: flex-start;
+    text-align: left;
+    padding: 0 0 0 0.9rem;
+    border-left: 1px solid var(--line);
+    border-right: 0;
+  }
 }
 
 @media (max-width: 520px) {

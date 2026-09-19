@@ -1,51 +1,27 @@
-/* Scroll beats — things that switch on at a given point inside an act.
+/* Scroll beats — moments inside an act.
 
-   All of these share one job: read an act's progress, toggle a state. */
+   All of these share one job: read the act's progress and write how far in
+   each element is, as --reveal (0..1). No classes that trigger a timed CSS
+   transition: a beat decided by scroll is animated by scroll, so it can
+   never lag behind it or play on after the hand has stopped. */
 
 import { onTick } from '../core/ticker.js';
-import { actById, scroll } from '../core/scroll.js';
+import { actById } from '../core/scroll.js';
 import { clamp, mapRange } from '../core/utils.js';
+import { createRevealWriter } from './reveal.js';
 
 /** Act 05 — the three statements, each arriving at its own moment. */
 function initStatements(nodes) {
   const act = actById('purpose');
   if (!act) return;
   const cues = [0.16, 0.4, 0.64];
+  const set = createRevealWriter();
 
   onTick(() => {
     if (!act.active) return;
-    nodes.forEach((el, i) => {
-      el.classList.toggle('is-on', act.progress >= cues[i] && act.progress < 0.97);
-    });
-  });
-}
-
-/** Act 04 — hotspots and the component ticker, live only while fully exploded. */
-function initExplodeOverlay(hotspots, ticker, tickerText) {
-  const act = actById('explode');
-  if (!act || !hotspots) return;
-
-  const labels = [...hotspots.querySelectorAll('.hotspot')].map((h) => h.dataset.kind);
-  let shown = '';
-
-  hotspots.querySelectorAll('.hotspot').forEach((spot) => {
-    spot.setAttribute('aria-label', spot.dataset.label);
-    spot.addEventListener('pointerenter', () => {
-      tickerText.textContent = spot.dataset.label;
-      shown = spot.dataset.label;
-    });
-    spot.addEventListener('pointerleave', () => { shown = ''; });
-  });
-
-  onTick(() => {
-    if (!act.active) return;
-    const live = act.progress > 0.52 && act.progress < 0.96;
-    hotspots.classList.toggle('is-on', live);
-    ticker.classList.toggle('is-on', live);
-
-    if (!live || shown) return;
-    const i = Math.min(labels.length - 1, Math.floor(mapRange(act.progress, 0.52, 0.96) * labels.length));
-    if (tickerText.textContent !== labels[i]) tickerText.textContent = labels[i];
+    const p = act.progress;
+    const leaving = 1 - mapRange(p, 0.9, 0.97);
+    nodes.forEach((el, i) => set(el, mapRange(p, cues[i], cues[i] + 0.1) * leaving));
   });
 }
 
@@ -55,25 +31,46 @@ function initCreed(creed) {
   if (!act || !creed) return;
 
   const words = [...creed.querySelectorAll('span')];
+  const set = createRevealWriter();
 
   onTick(() => {
     if (!act.active) return;
-    // Spread the words across the middle of the act, then hold
+    // Spread the words across the middle of the act, then hold. Each word
+    // takes one word's worth of scroll to arrive.
     const reached = mapRange(act.progress, 0.12, 0.72) * words.length;
-    words.forEach((word, i) => word.classList.toggle('is-on', reached > i));
+    words.forEach((word, i) => set(word, clamp(reached - i)));
   });
 }
 
-/** The top progress bar. */
-function initProgressBar(bar) {
+/** Silence — two small lines on black, paced slower than anything else on
+    the page. Nothing else moves while they arrive. */
+function initSilence(root) {
+  const act = actById('silence');
+  if (!act || !root) return;
+
+  const listen = root.querySelector('.silence__listen');
+  const wait = root.querySelector('.silence__wait');
+  const last = { listen: '', wait: '' };
+
+  const set = (el, key, amount) => {
+    const value = `${amount.toFixed(3)}|${((1 - amount) * 10).toFixed(1)}`;
+    if (last[key] === value) return;
+    last[key] = value;
+    el.style.opacity = amount.toFixed(3);
+    el.style.transform = `translate3d(0, ${((1 - amount) * 10).toFixed(1)}px, 0)`;
+  };
+
   onTick(() => {
-    bar.style.transform = `scaleX(${clamp(scroll.progress)})`;
+    if (!act.active) return;
+    const p = act.progress;
+    const leaving = 1 - mapRange(p, 0.88, 1);
+    set(listen, 'listen', mapRange(p, 0.1, 0.36) * leaving);
+    set(wait, 'wait', mapRange(p, 0.48, 0.72) * leaving);
   });
 }
 
 export function initBeats(refs) {
   initStatements(refs.statements);
-  initExplodeOverlay(refs.hotspots, refs.ticker, refs.tickerText);
   initCreed(refs.creed);
-  initProgressBar(refs.progressBar);
+  initSilence(refs.silence);
 }

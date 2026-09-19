@@ -1,46 +1,59 @@
-/* Scroll state.
+/* Scroll state — the single clock the whole film runs on.
 
-   Native scrolling is left completely intact — we never transform <body>.
-   Instead we keep a *smoothed* scroll value that every animation reads from.
-   That is what gives the film its weight without breaking trackpads,
-   scrollbars, keyboard paging or mobile momentum. */
+   Native scrolling is left completely intact; nothing transforms <body>.
+   The position is sampled exactly once per frame, in the ticker's read
+   phase, and every scroll-linked visual on the page — the film, its
+   lighting, text focus, reveals, hotspots, parallax, the progress ring —
+   is computed from that one number in that same frame.
+
+   There is deliberately no easing here. The sticky layout is moved by the
+   browser from the real scroll position; an eased copy driving the film
+   made the product trail the text by several frames and finish moving on
+   its own after the hand had stopped. Smoothness comes from the browser's
+   own scrolling (trackpad momentum, animated wheel scrolling), and every
+   layer follows the same value, so they can never disagree. */
 
 import { onTick } from './ticker.js';
-import { clamp, damp, lerp, prefersReducedMotion, onResize } from './utils.js';
-
-/* The sticky layout follows the raw scroll position while the film follows
-   this eased one. Too much easing and the two visibly disagree, which reads
-   as the page lagging behind the wheel rather than as weight. */
-const SMOOTHING = 0.2;
+import { clamp, onResize } from './utils.js';
 
 export const scroll = {
-  y: 0,          // raw scrollY
-  smooth: 0,     // eased scrollY — drives all animation
+  y: 0,          // scrollY, sampled once per frame
   progress: 0,   // 0..1 over the whole document
   velocity: 0,   // px/frame, signed
   vh: 0,
   vw: 0,
 };
 
-/** @type {{id:string, el:HTMLElement, top:number, span:number, progress:number, active:boolean}[]} */
+/**
+ * @type {{
+ *   id:string, el:HTMLElement, sticky:HTMLElement, cue:object|null,
+ *   top:number, height:number, span:number,
+ *   progress:number,  // 0..1 while the act is pinned
+ *   local:number,     // viewport-heights from the pin point: -1 → 0 while
+ *                     // scrolling in, then 0 → span/vh while pinned
+ *   active:boolean,   // any part of the act is on screen
+ * }[]}
+ */
 export const acts = [];
 
 let maxScroll = 1;
 
-export function registerActs(nodes) {
+export function registerActs(nodes, cueFor) {
   acts.length = 0;
-  nodes.forEach((el) => {
+  for (const el of nodes) {
     acts.push({
       id: el.dataset.act,
       el,
       sticky: el.firstElementChild,
+      cue: cueFor ? cueFor(el.dataset.act) ?? null : null,
       top: 0,
       height: 1,
       span: 1,
       progress: 0,
+      local: -1,
       active: false,
     });
-  });
+  }
   measure();
 }
 
@@ -49,11 +62,7 @@ export function measure() {
   scroll.vh = innerHeight;
   scroll.vw = innerWidth;
   maxScroll = Math.max(1, document.documentElement.scrollHeight - scroll.vh);
-
   for (const act of acts) {
-    // Every layout read happens here and nowhere else. Reading geometry
-    // from inside the animation loop forces a synchronous reflow on each
-    // access, and there is one of these per act per frame to get wrong.
     act.top = act.el.offsetTop;
     act.height = act.el.offsetHeight;
     // While an act's sticky child is pinned, the act travels (height - vh).
@@ -61,54 +70,26 @@ export function measure() {
   }
 }
 
-let lastRawY = 0;
-let snapNext = false;
-
-/** A jump this large in one frame is never a scroll gesture — it is an
-    anchor link, a restored position or a programmatic scroll. Following it
-    with the easing would send the film sliding through half the sequence. */
-function isDiscontinuous(y) {
-  return Math.abs(y - lastRawY) > scroll.vh * 1.5;
-}
-
-function update(dt) {
-  const previous = scroll.smooth;
-  scroll.y = window.scrollY || window.pageYOffset || 0;
-
-  // A throttled tab (backgrounded, or low-power) runs this loop at a few
-  // frames a second, so the easing would take seconds to catch up and the
-  // film would visibly slide on return. Snap instead.
-  if (snapNext || isDiscontinuous(scroll.y) || prefersReducedMotion()) {
-    scroll.smooth = scroll.y;
-    snapNext = false;
-  } else {
-    scroll.smooth = lerp(scroll.smooth, scroll.y, damp(SMOOTHING, dt));
-  }
-  lastRawY = scroll.y;
-
-  // Settle exactly, so nothing drifts by a fraction of a pixel forever
-  if (Math.abs(scroll.smooth - scroll.y) < 0.08) scroll.smooth = scroll.y;
-
-  scroll.velocity = scroll.smooth - previous;
-  scroll.progress = clamp(scroll.smooth / maxScroll);
+function sample() {
+  const y = window.scrollY || window.pageYOffset || 0;
+  scroll.velocity = y - scroll.y;
+  scroll.y = y;
+  scroll.progress = clamp(y / maxScroll);
 
   for (const act of acts) {
-    act.progress = clamp((scroll.smooth - act.top) / act.span);
-    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.height;
+    act.progress = clamp((y - act.top) / act.span);
+    act.local = (y - act.top) / scroll.vh;
+    act.active = y >= act.top - scroll.vh && y < act.top + act.height;
   }
 }
 
 export function initScroll() {
-  scroll.y = scroll.smooth = lastRawY = window.scrollY || 0;
+  scroll.y = window.scrollY || 0;
   measure();
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) snapNext = true;
-  });
   onResize(measure);
-  // Late relayout: web fonts and the first frames both change nothing
-  // structurally, but images decoding can, so re-measure once settled.
+  // Fonts and images can shift layout after first paint; re-measure once.
   addEventListener('load', () => setTimeout(measure, 120));
-  onTick(update);
+  onTick(sample, { phase: 'read' });
 }
 
 export const actById = (id) => acts.find((a) => a.id === id);

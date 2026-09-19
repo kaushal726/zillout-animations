@@ -19,12 +19,17 @@ MODULES = [
     "js/core/ticker.js",
     "js/core/hidpi.js",
     "js/core/scroll.js",
+    "js/core/stage.js",
+    "js/core/quality.js",
     "js/film/stops.js",
+    "js/film/camera.js",
     "js/film/loader.js",
     "js/film/canvas.js",
+    "js/film/cues.js",
     "js/film/timeline.js",
     "js/fx/energy.js",
     "js/fx/visualizer.js",
+    "js/fx/field.js",
     "js/ui/preloader.js",
     "js/ui/nav.js",
     "js/ui/cursor.js",
@@ -33,6 +38,10 @@ MODULES = [
     "js/ui/rail.js",
     "js/ui/parallax.js",
     "js/ui/beats.js",
+    "js/ui/hotspots.js",
+    "js/ui/markers.js",
+    "js/ui/kinetic.js",
+    "js/ui/ring.js",
     "js/ui/debug.js",
     "js/main.js",
 ]
@@ -43,9 +52,13 @@ IMPORT_RE = re.compile(r"^\s*import\s[^;]*;\s*$", re.MULTILINE)
 EXPORT_RE = re.compile(r"^export\s+", re.MULTILINE)
 
 
-def collect_exported_names(source: str) -> set[str]:
+def collect_top_level_names(source: str) -> set[str]:
+    """Every top-level declaration, exported or not. Once concatenated, all
+    modules share one scope, so a private name in one file collides with a
+    private name in another just as surely as two exports would."""
     names = set()
-    for match in re.finditer(r"^export\s+(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)", source, re.MULTILINE):
+    pattern = r"^(?:export\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)"
+    for match in re.finditer(pattern, source, re.MULTILINE):
         names.add(match.group(1))
     return names
 
@@ -62,7 +75,7 @@ def main() -> int:
             return 1
         source = path.read_text()
 
-        for name in collect_exported_names(source):
+        for name in collect_top_level_names(source):
             if name in seen:
                 duplicates.append(f"{name} (in {seen[name]} and {rel})")
             else:
@@ -86,7 +99,7 @@ def main() -> int:
 
     size = OUT.stat().st_size
     print(f"bundled {len(MODULES)} modules -> {OUT.relative_to(ROOT)} ({size/1024:.1f} KB)")
-    print(f"exported names checked for collisions: {len(seen)}")
+    print(f"top-level names checked for collisions: {len(seen)}")
     return 0
 
 

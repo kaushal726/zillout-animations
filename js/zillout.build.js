@@ -41,41 +41,61 @@ const onResize = (fn, wait = 150) => {
 
 /* ── js/core/ticker.js ─────────────────────────────── */
 /* One requestAnimationFrame loop for the whole page.
-   Every animated system subscribes here rather than starting its own. */
 
-const subscribers = new Set();
+   Every animated system subscribes here rather than starting its own, and
+   each frame runs in two phases:
+
+     read    anything that measures — scroll position, element geometry.
+             Runs first, while layout is still clean from the last frame.
+     write   everything else: compute, then touch the DOM and canvases.
+
+   Reading layout after something has written styles in the same frame
+   forces the browser to recalculate style and layout synchronously, on the
+   spot. Keeping all reads ahead of all writes means that never happens. */
+
+const readers = new Set();
+const writers = new Set();
 let running = false;
 let last = 0;
+
+function run(set, dt, now) {
+  for (const fn of set) {
+    try {
+      fn(dt, now);
+    } catch (error) {
+      // One bad subscriber must not take the whole page's motion with it:
+      // without this, a single throw stops the loop permanently.
+      console.error('[zillout] ticker subscriber failed, dropping it:', error);
+      set.delete(fn);
+    }
+  }
+}
 
 function frame(now) {
   const dt = Math.min(64, now - last); // cap after a tab-switch stall
   last = now;
 
-  for (const fn of subscribers) {
-    try {
-      fn(dt, now);
-    } catch (error) {
-      // One bad subscriber must not take the whole page's motion with it:
-      // without this, a single throw stops the loop permanently and every
-      // scroll-driven animation freezes at once.
-      console.error('[zillout] ticker subscriber failed, dropping it:', error);
-      subscribers.delete(fn);
-    }
-  }
+  run(readers, dt, now);
+  run(writers, dt, now);
 
-  if (subscribers.size > 0) requestAnimationFrame(frame);
+  if (readers.size + writers.size > 0) requestAnimationFrame(frame);
   else running = false;
 }
 
-/** Subscribe to the shared loop. Returns an unsubscribe function. */
-function onTick(fn) {
-  subscribers.add(fn);
+/**
+ * Subscribe to the shared loop. Returns an unsubscribe function.
+ * @param {(dt:number, now:number) => void} fn
+ * @param {{ phase?: 'read' | 'write' }} [options]
+ */
+function onTick(fn, { phase = 'write' } = {}) {
+  const set = phase === 'read' ? readers : writers;
+  set.add(fn);
   if (!running) {
     running = true;
     last = performance.now();
     requestAnimationFrame(frame);
   }
-  return () => subscribers.delete(fn);
+  return () => set.delete(fn);
 }
 
 /* ── js/core/hidpi.js ─────────────────────────────── */
@@ -93,47 +113,60 @@ function sizeCanvas(canvas, ctx, maxDpr = 2) {
 }
 
 /* ── js/core/scroll.js ─────────────────────────────── */
-/* Scroll state.
+/* Scroll state — the single clock the whole film runs on.
 
-   Native scrolling is left completely intact — we never transform <body>.
-   Instead we keep a *smoothed* scroll value that every animation reads from.
-   That is what gives the film its weight without breaking trackpads,
-   scrollbars, keyboard paging or mobile momentum. */
+   Native scrolling is left completely intact; nothing transforms <body>.
+   The position is sampled exactly once per frame, in the ticker's read
+   phase, and every scroll-linked visual on the page — the film, its
+   lighting, text focus, reveals, hotspots, parallax, the progress ring —
+   is computed from that one number in that same frame.
 
+   There is deliberately no easing here. The sticky layout is moved by the
+   browser from the real scroll position; an eased copy driving the film
+   made the product trail the text by several frames and finish moving on
+   its own after the hand had stopped. Smoothness comes from the browser's
+   own scrolling (trackpad momentum, animated wheel scrolling), and every
+   layer follows the same value, so they can never disagree. */
 
-/* The sticky layout follows the raw scroll position while the film follows
-   this eased one. Too much easing and the two visibly disagree, which reads
-   as the page lagging behind the wheel rather than as weight. */
-const SMOOTHING = 0.2;
 
 const scroll = {
-  y: 0,          // raw scrollY
-  smooth: 0,     // eased scrollY — drives all animation
+  y: 0,          // scrollY, sampled once per frame
   progress: 0,   // 0..1 over the whole document
   velocity: 0,   // px/frame, signed
   vh: 0,
   vw: 0,
 };
 
-/** @type {{id:string, el:HTMLElement, top:number, span:number, progress:number, active:boolean}[]} */
+/**
+ * @type {{
+ *   id:string, el:HTMLElement, sticky:HTMLElement, cue:object|null,
+ *   top:number, height:number, span:number,
+ *   progress:number,  // 0..1 while the act is pinned
+ *   local:number,     // viewport-heights from the pin point: -1 → 0 while
+ *                     // scrolling in, then 0 → span/vh while pinned
+ *   active:boolean,   // any part of the act is on screen
+ * }[]}
+ */
 const acts = [];
 
 let maxScroll = 1;
 
-function registerActs(nodes) {
+function registerActs(nodes, cueFor) {
   acts.length = 0;
-  nodes.forEach((el) => {
+  for (const el of nodes) {
     acts.push({
       id: el.dataset.act,
       el,
       sticky: el.firstElementChild,
+      cue: cueFor ? cueFor(el.dataset.act) ?? null : null,
       top: 0,
       height: 1,
       span: 1,
       progress: 0,
+      local: -1,
       active: false,
     });
-  });
+  }
   measure();
 }
 
@@ -142,11 +175,7 @@ function measure() {
   scroll.vh = innerHeight;
   scroll.vw = innerWidth;
   maxScroll = Math.max(1, document.documentElement.scrollHeight - scroll.vh);
-
   for (const act of acts) {
-    // Every layout read happens here and nowhere else. Reading geometry
-    // from inside the animation loop forces a synchronous reflow on each
-    // access, and there is one of these per act per frame to get wrong.
     act.top = act.el.offsetTop;
     act.height = act.el.offsetHeight;
     // While an act's sticky child is pinned, the act travels (height - vh).
@@ -154,57 +183,153 @@ function measure() {
   }
 }
 
-let lastRawY = 0;
-let snapNext = false;
-
-/** A jump this large in one frame is never a scroll gesture — it is an
-    anchor link, a restored position or a programmatic scroll. Following it
-    with the easing would send the film sliding through half the sequence. */
-function isDiscontinuous(y) {
-  return Math.abs(y - lastRawY) > scroll.vh * 1.5;
-}
-
-function update(dt) {
-  const previous = scroll.smooth;
-  scroll.y = window.scrollY || window.pageYOffset || 0;
-
-  // A throttled tab (backgrounded, or low-power) runs this loop at a few
-  // frames a second, so the easing would take seconds to catch up and the
-  // film would visibly slide on return. Snap instead.
-  if (snapNext || isDiscontinuous(scroll.y) || prefersReducedMotion()) {
-    scroll.smooth = scroll.y;
-    snapNext = false;
-  } else {
-    scroll.smooth = lerp(scroll.smooth, scroll.y, damp(SMOOTHING, dt));
-  }
-  lastRawY = scroll.y;
-
-  // Settle exactly, so nothing drifts by a fraction of a pixel forever
-  if (Math.abs(scroll.smooth - scroll.y) < 0.08) scroll.smooth = scroll.y;
-
-  scroll.velocity = scroll.smooth - previous;
-  scroll.progress = clamp(scroll.smooth / maxScroll);
+function sample() {
+  const y = window.scrollY || window.pageYOffset || 0;
+  scroll.velocity = y - scroll.y;
+  scroll.y = y;
+  scroll.progress = clamp(y / maxScroll);
 
   for (const act of acts) {
-    act.progress = clamp((scroll.smooth - act.top) / act.span);
-    act.active = scroll.smooth >= act.top - scroll.vh && scroll.smooth < act.top + act.height;
+    act.progress = clamp((y - act.top) / act.span);
+    act.local = (y - act.top) / scroll.vh;
+    act.active = y >= act.top - scroll.vh && y < act.top + act.height;
   }
 }
 
 function initScroll() {
-  scroll.y = scroll.smooth = lastRawY = window.scrollY || 0;
+  scroll.y = window.scrollY || 0;
   measure();
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) snapNext = true;
-  });
   onResize(measure);
-  // Late relayout: web fonts and the first frames both change nothing
-  // structurally, but images decoding can, so re-measure once settled.
+  // Fonts and images can shift layout after first paint; re-measure once.
   addEventListener('load', () => setTimeout(measure, 120));
-  onTick(update);
+  onTick(sample, { phase: 'read' });
 }
 
 const actById = (id) => acts.find((a) => a.id === id);
+
+/* ── js/core/stage.js ─────────────────────────────── */
+/* Shared per-frame state.
+
+   Several systems need the same few facts — where the pointer is, where the
+   camera is, where the product sits on screen, which component is under the
+   light. They live here, each field with exactly one writer, instead of every
+   module tracking its own copy and drifting out of step.
+
+     pointer   written here
+     camera    written by the film loop (main.js)
+     product   written by the film loop
+     hotspot   written by ui/hotspots.js */
+
+
+const stage = {
+  // x/y are raw; ex/ey are an eased copy, for anything that should drift
+  // after the pointer rather than snap to it (light, halo).
+  pointer: { x: 0, y: 0, ex: 0, ey: 0, inside: false, fine: false },
+  camera: { scale: 1, tx: 0, ty: 0 },
+  // Screen-space centre of the product, how visible it is (0..1), and how
+  // much this moment invites studio light and the product halo (0..1).
+  product: { x: 0, y: 0, presence: 0, studio: 0 },
+  // The component under the light, how far the light has come up (amount),
+  // and how far into focus mode it is (focus).
+  hotspot: { id: null, amount: 0, focus: 0 },
+};
+
+function initStage() {
+  const p = stage.pointer;
+  p.fine = !isCoarsePointer();
+  p.x = p.ex = innerWidth / 2;
+  p.y = p.ey = innerHeight / 2;
+
+  addEventListener('pointermove', (e) => {
+    p.x = e.clientX;
+    p.y = e.clientY;
+    p.inside = true;
+  }, { passive: true });
+  document.documentElement.addEventListener('mouseleave', () => { p.inside = false; });
+  addEventListener('blur', () => { p.inside = false; });
+
+  onTick((dt) => {
+    const k = damp(0.07, dt);
+    p.ex = lerp(p.ex, p.x, k);
+    p.ey = lerp(p.ey, p.y, k);
+  });
+}
+
+/* ── js/core/quality.js ─────────────────────────────── */
+/* Quality governor — protects the film when the device is struggling.
+
+   Priorities, highest first:
+     1  the image sequence              never degraded
+     2  typography and its focus shift  never degraded
+     3  interaction (hotspots, callout) never degraded
+     4  ambient (sound field, studio light, cursor halo)
+     5  decoration (grain movement)
+
+   The governor watches real frame pacing. If a large share of frames in a
+   window arrive late, it steps quality down one level, shedding priority 5
+   and then priority 4 work. It steps back up only after a long run of good
+   windows, so it cannot flicker between levels.
+
+     level 2   everything
+     level 1   ambient reduced: fewer motes, no studio light, grain still
+     level 0   ambient off
+
+   Phones start at level 1: the same film, with lighter atmosphere. */
+
+/** A frame counts as late past this — two-thirds of a 60Hz frame over. */
+const LATE_FRAME_MS = 26;
+const WINDOW_MS = 600;
+/** Share of late frames in a window that means sustained pressure. */
+const DEGRADE_AT = 0.35;
+/** Good windows in a row needed before stepping back up. */
+const RECOVER_AFTER = 8;
+
+const quality = { level: 2, max: 2 };
+
+function initQuality() {
+  const narrow = innerWidth < 860;
+  quality.max = narrow ? 1 : 2;
+  quality.level = quality.max;
+  document.documentElement.dataset.quality = String(quality.level);
+
+  let elapsed = 0;
+  let frames = 0;
+  let late = 0;
+  let calm = 0;
+
+  const set = (level) => {
+    if (level === quality.level) return;
+    quality.level = level;
+    document.documentElement.dataset.quality = String(level);
+  };
+
+  onTick((dt) => {
+    // The ticker caps dt at 64ms after a stall (tab switch, first paint);
+    // those are not evidence of steady pressure.
+    if (dt >= 64) return;
+    frames += 1;
+    if (dt > LATE_FRAME_MS) late += 1;
+    elapsed += dt;
+    if (elapsed < WINDOW_MS) return;
+
+    const share = late / frames;
+    if (share > DEGRADE_AT && quality.level > 0) {
+      set(quality.level - 1);
+      calm = 0;
+    } else if (share < 0.05) {
+      calm += 1;
+      if (calm >= RECOVER_AFTER && quality.level < quality.max) {
+        set(quality.level + 1);
+        calm = 0;
+      }
+    } else {
+      calm = 0;
+    }
+    elapsed = 0;
+    frames = 0;
+    late = 0;
+  }, { phase: 'read' });
+}
 
 /* ── js/film/stops.js ─────────────────────────────── */
 /* Piecewise keyframes.
@@ -241,6 +366,48 @@ function sampleStops(stops, p, ease = true) {
   return stops[stops.length - 1][1];
 }
 
+/* ── js/film/camera.js ─────────────────────────────── */
+/* The film's three coordinate spaces.
+
+     art     0..1 across the source still
+     canvas  CSS pixels of the film canvas, before its CSS transform
+     screen  viewport pixels, after the camera: scale about ORIGIN, then
+             translate
+
+   Anything that has to sit on a component — a hotspot, a light, a marker —
+   is defined once in art space and mapped through here, so it stays locked
+   to the render on every aspect ratio and through every camera move. */
+
+/** Must match `.film__canvas { transform-origin }`. */
+const ORIGIN = { x: 0.5, y: 0.46 };
+
+function canvasToScreen(cam, x, y, w, h) {
+  const ox = w * ORIGIN.x;
+  const oy = h * ORIGIN.y;
+  return { x: ox + (x - ox) * cam.scale + cam.tx, y: oy + (y - oy) * cam.scale + cam.ty };
+}
+
+function screenToCanvas(cam, x, y, w, h) {
+  const ox = w * ORIGIN.x;
+  const oy = h * ORIGIN.y;
+  return { x: ox + (x - cam.tx - ox) / cam.scale, y: oy + (y - cam.ty - oy) / cam.scale };
+}
+
+/**
+ * Translation that carries the canvas point (px, py) a fraction `pull` of
+ * the way from where the plain scale would put it towards the centre of the
+ * frame. pull = 0 is exactly the un-aimed camera, so aiming can ease in and
+ * out with no jump.
+ */
+function aimTranslate(px, py, scale, pull, w, h) {
+  const landedX = w * ORIGIN.x + (px - w * ORIGIN.x) * scale;
+  const landedY = h * ORIGIN.y + (py - h * ORIGIN.y) * scale;
+  return {
+    tx: lerp(landedX, w * 0.5, pull) - landedX,
+    ty: lerp(landedY, h * 0.5, pull) - landedY,
+  };
+}
+
 /* ── js/film/loader.js ─────────────────────────────── */
 /* Frame sequence loader.
 
@@ -254,7 +421,14 @@ function sampleStops(stops, p, ease = true) {
 
    So: load in priority waves, then keep the background queue pointed at
    wherever the playhead actually is — not at index order — and never treat
-   a frame as ready until it is decoded. */
+   a frame as ready until it is decoded.
+
+   Decoded is not forever: the browser keeps decoded images in a bounded,
+   evictable cache, so a frame decoded at load can be cold again by the time
+   the viewer reaches it. A sliding window ahead of the playhead, in the
+   direction of travel, is re-decoded off the main thread as it approaches.
+   The cache itself stays the browser's: 240 compressed images are held
+   (~15MB), and decoded memory stays bounded by the browser, not by us. */
 
 const CONCURRENCY = 6;
 /* Long enough that a real decode always wins; short enough that a stalled
@@ -264,6 +438,17 @@ const DECODE_TIMEOUT = 4000;
 /* Absolute ceiling on the opening wave, so a slow network can never leave
    the page sitting black. */
 const ESSENTIAL_TIMEOUT = 9000;
+/* How far a decoded frame may be from the one asked for and still be
+   preferred over a closer, undecoded one. Three frames is invisible in
+   motion; much more and the pose itself visibly jumps. */
+const DECODED_REACH = 3;
+
+/* Decode-ahead window, in frames. Upcoming frames matter far more than the
+   ones just passed, so the window leans in the direction of travel. */
+const WARM_AHEAD = 12;
+const WARM_BEHIND = 4;
+/* A frame re-requested within this long is assumed still decoded. */
+const REWARM_MS = 2000;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -285,6 +470,8 @@ class FrameLoader {
 
     this.pending = new Set();
     this.playhead = 1;
+    this.direction = 1;
+    this.warmedAt = new Float64Array(total + 1);
     this.essentialCount = 0;
     this.essentialDone = 0;
   }
@@ -293,9 +480,28 @@ class FrameLoader {
     return `${this.base}${String(n).padStart(this.pad, '0')}${this.ext}`;
   }
 
-  /** Where the scrub currently is, so loading follows the viewer. */
+  /** Where the scrub currently is, so loading and decoding follow the
+      viewer. Cheap to call every frame: it only acts when the frame moves. */
   setPlayhead(n) {
-    this.playhead = n;
+    const next = Math.round(n);
+    if (next === this.playhead) return;
+    this.direction = next > this.playhead ? 1 : -1;
+    this.playhead = next;
+    this.#warm();
+  }
+
+  /** Ask for the frames just ahead to be decoded before they are drawn. */
+  #warm() {
+    const now = performance.now();
+    const from = this.playhead - (this.direction > 0 ? WARM_BEHIND : WARM_AHEAD);
+    const to = this.playhead + (this.direction > 0 ? WARM_AHEAD : WARM_BEHIND);
+    for (let n = Math.max(1, from); n <= Math.min(this.total, to); n += 1) {
+      if (!this.loaded[n] || now - this.warmedAt[n] < REWARM_MS) continue;
+      this.warmedAt[n] = now;
+      const img = this.images.get(n);
+      if (!img?.decode) continue;
+      img.decode().then(() => { this.decoded[n] = 1; }, () => {});
+    }
   }
 
   #buildWaves() {
@@ -352,12 +558,14 @@ class FrameLoader {
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   }
 
-  /** Whichever pending frame is closest to the playhead. */
+  /** Whichever pending frame is closest to the playhead — frames ahead in
+      the direction of travel count as twice as close as those behind. */
   #nearestPending() {
     let best = null;
     let bestDistance = Infinity;
     for (const n of this.pending) {
-      const d = Math.abs(n - this.playhead);
+      const ahead = Math.sign(n - this.playhead) === this.direction;
+      const d = Math.abs(n - this.playhead) * (ahead ? 1 : 2);
       if (d < bestDistance) {
         bestDistance = d;
         best = n;
@@ -403,26 +611,27 @@ class FrameLoader {
   }
 
   /**
-   * Nearest frame that is safe to draw. Decoded frames win outright; a
-   * loaded-but-undecoded one is only used if nothing decoded is close,
-   * because drawing it would cost a synchronous decode.
+   * The frame to draw for `n`. A decoded frame is preferred — drawing one
+   * that is not yet decoded costs a synchronous decode on the main thread —
+   * but only within DECODED_REACH frames. Beyond that the nearest loaded
+   * frame wins even if undecoded: a one-off decode is a small hitch, while
+   * a decoded frame from far along the sequence is simply the wrong pose.
    */
   nearest(n) {
     const target = Math.round(Math.min(this.total, Math.max(1, n)));
     if (this.decoded[target]) return this.images.get(target);
 
-    let fallback = this.loaded[target] ? this.images.get(target) : null;
-    for (let d = 1; d <= this.total; d += 1) {
-      const lo = target - d;
-      const hi = target + d;
-      if (lo >= 1 && this.decoded[lo]) return this.images.get(lo);
-      if (hi <= this.total && this.decoded[hi]) return this.images.get(hi);
-      if (!fallback) {
-        if (lo >= 1 && this.loaded[lo]) fallback = this.images.get(lo);
-        else if (hi <= this.total && this.loaded[hi]) fallback = this.images.get(hi);
-      }
+    for (let d = 1; d <= DECODED_REACH; d += 1) {
+      if (target - d >= 1 && this.decoded[target - d]) return this.images.get(target - d);
+      if (target + d <= this.total && this.decoded[target + d]) return this.images.get(target + d);
     }
-    return fallback;
+
+    if (this.loaded[target]) return this.images.get(target);
+    for (let d = 1; d <= this.total; d += 1) {
+      if (target - d >= 1 && this.loaded[target - d]) return this.images.get(target - d);
+      if (target + d <= this.total && this.loaded[target + d]) return this.images.get(target + d);
+    }
+    return null;
   }
 
   /** Diagnostics for the ?debug overlay. */
@@ -438,20 +647,48 @@ class FrameLoader {
 }
 
 /* ── js/film/canvas.js ─────────────────────────────── */
-/* The film canvas — draws one still, correctly framed, at device resolution. */
+/* The film canvas — draws one still, correctly framed, then lights it.
+
+   Lighting is how every "focus" moment on this page works. The render is a
+   flat image sequence with no separate layers, so a component cannot really
+   step forward. What can be done honestly is what a lighting director does:
+   put light on one thing and let shadow take the rest. Three passes, all
+   drawn over the untouched frame:
+
+     lights  soft-light highlights. Soft-light leaves black black, so light
+             only lands on the product, never on the empty studio around it.
+     rim     a band of light at a radius, for light that travels.
+     shade   darkness outside a circle, with a soft falloff.
+
+   Then two things that used to be separate full-screen layers, baked into
+   the same draw so the compositor no longer blends them every frame:
+
+     vignette  rendered once per resize into an offscreen canvas and blitted.
+     dim       the film's brightness, as one black fill. A CSS filter on this
+               canvas cost an extra offscreen pass at device resolution on
+               every frame, whether or not anything had changed.            */
 
 
-/* The stills are 1920px wide. Filling a retina backing store means drawing
+/* The stills are 1920x1080. Filling a retina backing store means drawing
    them at 2x their own resolution — four times the pixels to push, for no
    detail that exists in the source. Cap the backing store at the source
    width and let the compositor do the final upscale, which is free. */
 const SOURCE_WIDTH = 1920;
+const SOURCE_HEIGHT = 1080;
+
+const LIGHT = '214, 226, 255';
+const RIM = '222, 232, 255';
+const SHADE = '3, 3, 3';
 
 class FilmCanvas {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.current = null;
+    this.lighting = null;
+    this.lightKey = '';
+    this.brightness = 1;
+    this.vignette = document.createElement('canvas');
     this.resize();
   }
 
@@ -464,7 +701,44 @@ class FilmCanvas {
     // 1920px being drawn at roughly that size, so the extra quality is
     // invisible while the cost is not.
     this.ctx.imageSmoothingQuality = 'medium';
-    if (this.current) this.draw(this.current, true);
+    this.fit = this.#fitFor(SOURCE_WIDTH, SOURCE_HEIGHT);
+    this.#renderVignette();
+    if (this.current) this.draw(this.current, this.lighting, this.brightness, true);
+  }
+
+  /** The corner falloff and the top/bottom scrims (for the nav above and
+      the copy below), rendered once at the canvas's own resolution. */
+  #renderVignette() {
+    const v = this.vignette;
+    v.width = this.canvas.width;
+    v.height = this.canvas.height;
+    const g = v.getContext('2d');
+    const w = v.width;
+    const h = v.height;
+
+    // Elliptical corner falloff: a circular gradient in a scaled space.
+    const rx = w * 0.8;
+    const ry = h * 0.64;
+    g.save();
+    g.translate(w * 0.5, h * 0.46);
+    g.scale(rx / ry, 1);
+    const radial = g.createRadialGradient(0, 0, 0, 0, 0, ry);
+    radial.addColorStop(0.34, `rgba(${SHADE}, 0)`);
+    radial.addColorStop(0.74, `rgba(${SHADE}, 0.5)`);
+    radial.addColorStop(1, `rgba(${SHADE}, 0.9)`);
+    g.fillStyle = radial;
+    g.fillRect(-w * 2, -h * 2, w * 4, h * 4); // over-covers; clipped to the canvas
+    g.restore();
+
+    const linear = g.createLinearGradient(0, 0, 0, h);
+    linear.addColorStop(0, `rgba(${SHADE}, 0.82)`);
+    linear.addColorStop(0.15, `rgba(${SHADE}, 0.28)`);
+    linear.addColorStop(0.32, `rgba(${SHADE}, 0)`);
+    linear.addColorStop(0.5, `rgba(${SHADE}, 0)`);
+    linear.addColorStop(0.8, `rgba(${SHADE}, 0.58)`);
+    linear.addColorStop(1, `rgba(${SHADE}, 0.9)`);
+    g.fillStyle = linear;
+    g.fillRect(0, 0, w, h);
   }
 
   /**
@@ -473,39 +747,344 @@ class FilmCanvas {
    * and right, and a cover crop on a phone would throw them off screen.
    * The artwork sits on pure black, so the letterboxing is invisible.
    */
-  #scaleFor(iw, ih) {
+  #fitFor(iw, ih) {
     const cover = Math.max(this.w / iw, this.h / ih);
     const contain = Math.min(this.w / iw, this.h / ih);
     // Just past a contained fit: enough overscan to kill the side letterbox
     // without cropping the outermost exploded parts, which sit at roughly
     // 10% in from each edge of the artwork.
     const portrait = contain * 1.15;
-    return lerp(portrait, cover, mapRange(this.w / this.h, 0.72, 1.25));
+    const aspect = mapRange(this.w / this.h, 0.72, 1.25);
+    const s = lerp(portrait, cover, aspect);
+    // On portrait the band is much shorter than the screen, so it is lifted
+    // off dead centre to leave the copy below it room to breathe.
+    const anchor = lerp(0.45, 0.5, aspect);
+    return { s, x: (this.w - iw * s) / 2, y: (this.h - ih * s) * anchor };
   }
 
-  /** Where the artwork's centre sits vertically. On portrait the band is
-      much shorter than the screen, so it is lifted off dead centre to leave
-      the copy below it room to breathe. */
-  #anchorFor() {
-    return lerp(0.45, 0.5, mapRange(this.w / this.h, 0.72, 1.25));
+  /** Art space (0..1 of the source still) to canvas pixels. */
+  artToCanvas(u, v) {
+    const { s, x, y } = this.fit;
+    return { x: x + u * SOURCE_WIDTH * s, y: y + v * SOURCE_HEIGHT * s };
   }
 
-  draw(img, force = false) {
+  /** A length in art-width units, in canvas pixels. */
+  artLength(units) {
+    return units * SOURCE_WIDTH * this.fit.s;
+  }
+
+  /**
+   * Redraws only when the still, the lighting or the brightness actually
+   * changed. Lighting carries a precomputed key and brightness is bucketed,
+   * so an idle page costs nothing here.
+   */
+  draw(img, lighting = null, brightness = 1, force = false) {
     if (!img) return;
-    if (img === this.current && !force) return;
+    const bright = Math.min(1, brightness);
+    const key = `${lighting ? lighting.key : ''}|${Math.round(bright * 200)}`;
+    if (!force && img === this.current && key === this.lightKey) return;
     this.current = img;
+    this.lighting = lighting;
+    this.lightKey = key;
+    this.brightness = bright;
 
     const { ctx } = this;
-    const iw = img.naturalWidth;
-    const ih = img.naturalHeight;
-    const s = this.#scaleFor(iw, ih);
-    const dw = iw * s;
-    const dh = ih * s;
+    const fit = img.naturalWidth === SOURCE_WIDTH ? this.fit : this.#fitFor(img.naturalWidth, img.naturalHeight);
 
-    ctx.fillStyle = '#030303';
+    ctx.fillStyle = `rgb(${SHADE})`;
     ctx.fillRect(0, 0, this.w, this.h);
-    ctx.drawImage(img, (this.w - dw) / 2, (this.h - dh) * this.#anchorFor(), dw, dh);
+    ctx.drawImage(img, fit.x, fit.y, img.naturalWidth * fit.s, img.naturalHeight * fit.s);
+
+    if (lighting) this.#light(lighting);
+
+    // Blitted in device pixels, so reset to identity for this one draw.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(this.vignette, 0, 0);
+    ctx.restore();
+
+    if (bright < 0.998) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${(1 - bright).toFixed(3)})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
   }
+
+  #light({ lights, rim, shade }) {
+    const { ctx } = this;
+
+    // Light first, then shadow: light that falls outside the pool is then
+    // taken back by the shade, so it reads as a lit edge, not a glow.
+    if (lights.length || rim) {
+      ctx.globalCompositeOperation = 'soft-light';
+
+      for (const l of lights) {
+        if (l.strength < 0.004 || l.r < 1) continue;
+        const g = ctx.createRadialGradient(l.x, l.y, 0, l.x, l.y, l.r);
+        g.addColorStop(0, `rgba(${LIGHT}, ${l.strength})`);
+        g.addColorStop(1, `rgba(${LIGHT}, 0)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(l.x - l.r, l.y - l.r, l.r * 2, l.r * 2);
+      }
+
+      if (rim && rim.strength > 0.004) {
+        const inner = Math.max(0, rim.r - rim.width);
+        const outer = rim.r + rim.width;
+        const g = ctx.createRadialGradient(rim.x, rim.y, inner, rim.x, rim.y, outer);
+        g.addColorStop(0, `rgba(${RIM}, 0)`);
+        g.addColorStop(0.5, `rgba(${RIM}, ${rim.strength})`);
+        g.addColorStop(1, `rgba(${RIM}, 0)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(rim.x - outer, rim.y - outer, outer * 2, outer * 2);
+      }
+
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    if (shade && shade.alpha > 0.004) {
+      const r = Math.max(0, shade.r);
+      const g = ctx.createRadialGradient(shade.x, shade.y, r, shade.x, shade.y, r + Math.max(1, shade.soft));
+      g.addColorStop(0, `rgba(${SHADE}, 0)`);
+      g.addColorStop(1, `rgba(${SHADE}, ${shade.alpha})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+  }
+}
+
+/* ── js/film/cues.js ─────────────────────────────── */
+/* Cinematic cues — where the light falls, and the transition wave.
+
+   Every cue is a pure function of act progress (plus the pointer, for the
+   studio light), so each one scrubs backwards exactly as it plays forwards.
+   None of them redraws or moves a component: the film is still the original
+   render. They only decide where the light goes.
+
+     powerup    Act 03. A converged acoustic ring releases outward, and the
+                product is revealed inside it, lit by its passing edge.
+     focus      Act 06 opening. Shadow closes in until only the crown ring
+                is left, the camera travels to it, and its circle leaves as a
+                wave that carries into the gallery.
+     spotlight  Act 04. A hovered component comes up into light while the
+                rest of the assembly drops back.
+     reveal     Act 12. The finished product in darkness, uncovered by a
+                light that travels head, then body, then everything.
+     studio     A soft key light that leans towards the pointer, only in
+                moments where the product is the subject.                    */
+
+
+/* Components that can be put under the light, in art space. Measured on the
+   fully exploded frames (176–214), where they barely move. r is the radius
+   of the part in art-width units. */
+const COMPONENTS = {
+  crown: { u: 0.5, v: 0.078, r: 0.07 },
+  power: { u: 0.5, v: 0.665, r: 0.068 },
+  control: { u: 0.71, v: 0.333, r: 0.045 },
+  plating: { u: 0.262, v: 0.655, r: 0.066 },
+};
+
+/* ── Power-up geometry, shared with the energy field that draws the ring ── */
+
+const POWERUP = { converge: 0.62, reveal: 0.78 };
+
+/** The acoustic ring at the end of Act 03, in screen space. null before it
+    releases. */
+function powerupRing(p, w, h) {
+  if (p < POWERUP.reveal) return null;
+  const t = mapRange(p, POWERUP.reveal, 1);
+  const eased = t * t; // accelerates outward, like a released wave
+  const cx = w * ORIGIN.x;
+  const cy = h * ORIGIN.y;
+  const far = Math.hypot(Math.max(cx, w - cx), Math.max(cy, h - cy)) * 1.04;
+  return {
+    x: cx,
+    y: cy,
+    t,
+    r: lerp(Math.min(w, h) * 0.09, far, eased),
+    soft: lerp(12, 240, eased),
+  };
+}
+
+/* ── Individual cues ─────────────────────────────────────────────────── */
+
+function powerup({ p, w, h, cam }) {
+  const ring = powerupRing(p, w, h);
+  if (!ring) return null;
+  const c = screenToCanvas(cam, ring.x, ring.y, w, h);
+  const r = ring.r / cam.scale;
+  return {
+    // The product exists only inside the ring…
+    shade: { x: c.x, y: c.y, r, soft: ring.soft / cam.scale, alpha: 1 },
+    // …and the ring's own edge is what lights it as it passes.
+    rim: {
+      x: c.x,
+      y: c.y,
+      r,
+      width: lerp(18, 90, ring.t) / cam.scale,
+      strength: 0.62 * (1 - ring.t),
+    },
+    lights: [],
+  };
+}
+
+function focusZoom({ p, w, h, cam, film }) {
+  const crown = COMPONENTS.crown;
+  const c = film.artToCanvas(crown.u, crown.v);
+  const partR = film.artLength(crown.r);
+  const screen = canvasToScreen(cam, c.x, c.y, w, h);
+  // The ring is wide and the head sits just beneath it, so the pool of
+  // light is lifted a little above the ring's centre to keep the head out.
+  const pool = film.artToCanvas(crown.u, crown.v - 0.022);
+  const diag = Math.hypot(w, h);
+
+  // Shadow closes in until only the crown ring is left in the light.
+  const isolate = easeInOut(mapRange(p, 0.05, 0.24));
+  const lighting =
+    p < 0.4
+      ? {
+          shade: {
+            x: pool.x,
+            y: pool.y,
+            r: lerp(diag, partR * 1.12, isolate),
+            soft: lerp(diag * 0.4, partR * 0.62, isolate),
+            alpha: 0.94 * mapRange(p, 0.03, 0.14),
+          },
+          rim: null,
+          lights: [{ x: c.x, y: c.y, r: partR * 1.8, strength: 0.34 * isolate }],
+        }
+      : null;
+
+  // Engineering marker: arrives once the part is isolated, leaves as the
+  // camera commits to it.
+  const markerOpacity = mapRange(p, 0.12, 0.2) * (1 - mapRange(p, 0.27, 0.32));
+  const marker = markerOpacity > 0.002
+    ? { x: screen.x, y: screen.y, r: partR * cam.scale, opacity: markerOpacity }
+    : null;
+
+  // The ring's circle becomes the wave that carries the viewer onward.
+  const waveT = mapRange(p, 0.3, 0.46);
+  const wave =
+    waveT > 0 && waveT < 1
+      ? {
+          x: screen.x,
+          y: screen.y,
+          r: lerp(partR * cam.scale, diag * 0.75, waveT * waveT),
+          alpha: 0.85 * mapRange(waveT, 0, 0.12) * (1 - waveT),
+        }
+      : null;
+
+  return { lighting, wave, marker };
+}
+
+function spotlight({ film, stage }) {
+  const spot = stage.hotspot;
+  if (!spot.id || spot.amount < 0.004) return null;
+  const part = COMPONENTS[spot.id];
+  const c = film.artToCanvas(part.u, part.v);
+  const r = film.artLength(part.r);
+  const a = spot.amount;
+  const f = spot.focus;
+  return {
+    // The rest of the assembly drops back but stays readable.
+    shade: { x: c.x, y: c.y, r: r * lerp(1.5, 1.2, f), soft: r * lerp(2.6, 1.8, f), alpha: a * lerp(0.42, 0.66, f) },
+    rim: null,
+    lights: [{ x: c.x, y: c.y, r: r * 1.9, strength: a * lerp(0.3, 0.5, f) }],
+  };
+}
+
+function reveal({ p, film }) {
+  const head = film.artToCanvas(0.52, 0.31);
+  const body = film.artToCanvas(0.5, 0.6);
+  const artW = film.artLength(1);
+  const diag = Math.hypot(film.w, film.h);
+
+  const move = easeInOut(mapRange(p, 0.4, 0.66));
+  const x = lerp(head.x, body.x, move);
+  const y = lerp(head.y, body.y, move);
+
+  // Darkness, then the head, then the body, then everything.
+  let r = 0;
+  if (p >= 0.66) r = lerp(artW * 0.33, diag, easeInOut(mapRange(p, 0.66, 0.88)));
+  else if (p >= 0.4) r = lerp(artW * 0.13, artW * 0.33, move);
+  else if (p >= 0.18) r = lerp(0, artW * 0.13, easeInOut(mapRange(p, 0.18, 0.4)));
+
+  const dark = mapRange(p, 0, 0.14) * (1 - mapRange(p, 0.8, 0.9));
+  if (dark < 0.004) return null;
+
+  // The soft edge grows in with the light. A fixed minimum would punch a
+  // small hole in the darkness before the light has started to travel.
+  const soft = lerp(1, Math.max(40, r * 0.55), mapRange(p, 0.18, 0.24));
+
+  return {
+    // 0.93, not 1: the silhouette stays just readable in the dark.
+    shade: { x, y, r, soft, alpha: 0.93 * dark },
+    rim: {
+      x,
+      y,
+      r,
+      width: Math.max(24, r * 0.18),
+      strength: 0.56 * mapRange(p, 0.18, 0.24) * (1 - mapRange(p, 0.8, 0.9)),
+    },
+    lights: [],
+  };
+}
+
+/** A soft key light that leans towards the pointer but stays with the
+    product, so it reads as a light being moved, not a torch. */
+function studioLight({ w, h, cam, stage, studio }) {
+  const ptr = stage.pointer;
+  if (!ptr.fine || !ptr.inside || studio < 0.01) return null;
+  const prod = stage.product;
+  const reach = Math.min(w, h) * 0.55;
+  const closeness = 1 - clamp(Math.hypot(ptr.ex - prod.x, ptr.ey - prod.y) / reach);
+  const c = screenToCanvas(cam, lerp(prod.x, ptr.ex, 0.35), lerp(prod.y, ptr.ey, 0.35), w, h);
+  return {
+    x: c.x,
+    y: c.y,
+    r: (Math.min(w, h) * 0.42) / cam.scale,
+    strength: studio * (0.1 + 0.1 * closeness),
+  };
+}
+
+/* ── Assembly ────────────────────────────────────────────────────────── */
+
+const q = (v) => Math.round(v);
+const qa = (v) => Math.round(v * 200);
+
+function keyOf({ shade, rim, lights }) {
+  const parts = [];
+  if (shade) parts.push('s', q(shade.x), q(shade.y), q(shade.r), q(shade.soft), qa(shade.alpha));
+  if (rim) parts.push('r', q(rim.x), q(rim.y), q(rim.r), q(rim.width), qa(rim.strength));
+  for (const l of lights) parts.push('l', q(l.x), q(l.y), q(l.r), qa(l.strength));
+  return parts.join(',');
+}
+
+/**
+ * @param {object} ctx  { cue, p, w, h, cam, film, stage, studio }
+ * @returns {{ lighting: object|null, wave: object|null, marker: object|null }}
+ */
+function computeCues(ctx) {
+  let base = null;
+  let wave = null;
+  let marker = null;
+
+  switch (ctx.cue.cue) {
+    case 'powerup': base = powerup(ctx); break;
+    case 'spotlight': base = spotlight(ctx); break;
+    case 'reveal': base = reveal(ctx); break;
+    case 'focus': ({ lighting: base, wave, marker } = focusZoom(ctx)); break;
+    default: break;
+  }
+
+  const key = studioLight(ctx);
+  const lights = key ? [...(base?.lights ?? []), key] : base?.lights ?? [];
+  const shade = base?.shade ?? null;
+  const rim = base?.rim ?? null;
+
+  if (!shade && !rim && lights.length === 0) return { lighting: null, wave, marker };
+
+  const lighting = { shade, rim, lights };
+  lighting.key = keyOf(lighting);
+  return { lighting, wave, marker };
 }
 
 /* ── js/film/timeline.js ─────────────────────────────── */
@@ -513,86 +1092,114 @@ class FilmCanvas {
 
    Each act declares, as piecewise stops over its own scroll progress:
 
-     frames  which still is on screen. Flat segments are deliberate holds,
-             which is what turns the disassembly into a staged engineering
-             reveal instead of everything flying apart at once.
-     product opacity / brightness / scale / blur of the film.
-     text    opacity of that act's typography.
+     frames     which still is on screen. Flat segments are deliberate holds,
+                which is what turns the disassembly into a staged engineering
+                reveal instead of everything flying apart at once.
+     opacity / brightness / scale
+                the film itself.
+     text       opacity of that act's typography.
+
+   Optional channels:
+
+     aim + pull a point in art space the camera travels towards, and how far
+                (0 = the plain camera, so aiming eases in with no jump).
+     cue        a named lighting moment, see film/cues.js.
+     field      intensity of the ambient sound field around the product.
+     studio     how much this moment invites the pointer-led key light.
 
    The rule the whole page obeys: product and text are never both fully
-   present. One leads, the other recedes — and it recedes through opacity
-   and brightness, not through heavy blur, so nothing ever looks broken.
+   present. One leads, the other recedes — through opacity and brightness.
+   There is no blur: a live filter on the full-screen film cost an extra
+   compositing pass every frame, and at the opacities where it was used
+   (a backdrop at 12–30%) the 1.5px of defocus was not visible.
 
-   Blur is capped deliberately low (1.5px) and used only where the film is
-   deep background. */
+   The emotional arc the acts are ordered around:
+     curiosity → discovery → energy → engineering → immersion → silence
+     → reveal → desire */
 
 const TIMELINE = [
   {
     id: 'hero',
-    // Almost still. The opening should breathe, not move.
+    // CURIOSITY. Almost still. The opening should breathe, not move.
     frames:     [[0, 1], [1, 22]],
     opacity:    [[0, 1], [0.30, 1], [0.66, 0.5]],
     brightness: [[0, 1], [0.30, 1], [0.66, 0.78]],
     scale:      [[0, 1.05], [0.5, 1], [1, 1]],
-    blur:       [[0, 0]],
     text:       [[0, 1], [1, 1]],
+    field:      [[0, 0.3], [0.6, 0.18], [1, 0.12]],
+    studio:     [[0, 0.8], [0.6, 0.3]],
   },
   {
     id: 'form',
-    // Text leads. The product sits back and dims, but stays legible.
+    // DISCOVERY. Text leads. The product sits back and dims, but stays legible.
     frames:     [[0, 22], [1, 80]],
     opacity:    [[0, 0.5], [0.2, 0.3], [0.8, 0.3], [1, 0.55]],
     brightness: [[0, 0.8], [0.2, 0.62], [0.8, 0.62], [1, 0.8]],
     scale:      [[0, 1], [1, 1.015]],
-    blur:       [[0, 0]],
     text:       [[0, 1], [1, 1]],
   },
   {
     id: 'energy',
-    // Handover: the product recedes to a glow, the field takes the frame.
-    frames:     [[0, 80], [1, 88]],
-    opacity:    [[0, 0.55], [0.5, 0.12], [1, 0.1]],
-    brightness: [[0, 0.8], [1, 0.6]],
+    // ENERGY — the power-up. The product goes, a point of light remains,
+    // it becomes waves, the waves collapse into one acoustic ring, and the
+    // ring releases outward with the product formed inside it. The film is
+    // invisible from 0.3 until the ring releases at 0.78, where it cuts in
+    // behind a shade that only lets the inside of the ring through.
+    frames:     [[0, 80], [0.3, 86], [0.78, 88], [1, 88]],
+    opacity:    [[0, 0.55], [0.3, 0], [0.779, 0], [0.78, 1], [1, 1]],
+    // Silhouette first, then lit.
+    brightness: [[0, 0.8], [0.3, 0.6], [0.78, 0.18], [0.92, 0.7], [1, 1]],
     scale:      [[0, 1.015], [1, 1.04]],
-    blur:       [[0, 0], [0.5, 1.2], [1, 1.2]],
-    text:       [[0, 1], [0.85, 1], [1, 0.45]],
+    text:       [[0, 1], [0.52, 1], [0.64, 0], [1, 0]],
+    cue:        'powerup',
   },
   {
     id: 'explode',
-    // PRODUCT MOMENT. Staged disassembly with a pause at every stage, and
-    // the typography pulled right back so the engineering can be read.
+    // ENGINEERING. Staged disassembly with a settle at every stage, and the
+    // typography pulled right back so the engineering can be read. Once the
+    // assembly is fully open, its components can be put under the light.
     frames: [
       [0, 88], [0.17, 104], [0.19, 104],   // outer shell, settles
       [0.39, 124], [0.41, 124],            // structure, settles
       [0.61, 144], [0.63, 144],            // internals, settles
       [0.86, 168], [1, 176],               // full configuration
     ],
-    opacity:    [[0, 0.15], [0.18, 1], [1, 1]],
-    brightness: [[0, 0.7], [0.18, 1], [1, 1]],
+    opacity:    [[0, 1]],
+    brightness: [[0, 1]],
     // Push in, then the camera stops entirely for the middle of the act.
     scale:      [[0, 1.04], [0.25, 1], [0.78, 1], [1, 0.99]],
-    blur:       [[0, 1.2], [0.18, 0], [1, 0]],
-    text:       [[0, 1], [0.14, 0.3], [0.9, 0.3], [1, 0.5]],
+    text:       [[0, 0.7], [0.14, 0.3], [0.9, 0.3], [1, 0.5]],
+    cue:        'spotlight',
+    field:      [[0, 0.5], [0.2, 0.75], [1, 0.7]],
+    studio:     [[0, 0.8]],
   },
   {
     id: 'purpose',
-    // Text leads again, one statement at a time.
+    // Text leads again, one statement at a time — then hands straight back
+    // to the product for the move into the crown ring.
     frames:     [[0, 176], [1, 214]],
-    opacity:    [[0, 1], [0.16, 0.42], [0.85, 0.42], [1, 0.6]],
-    brightness: [[0, 1], [0.16, 0.7], [0.85, 0.7], [1, 0.8]],
-    scale:      [[0, 0.99], [1, 1.01]],
-    blur:       [[0, 0]],
-    text:       [[0, 0.5], [0.16, 1], [1, 1]],
+    opacity:    [[0, 1], [0.16, 0.42], [0.84, 0.42], [1, 1]],
+    brightness: [[0, 1], [0.16, 0.7], [0.84, 0.7], [1, 1]],
+    scale:      [[0, 0.99], [0.84, 1.01], [1, 1.04]],
+    text:       [[0, 0.5], [0.16, 1], [0.84, 1], [1, 0.35]],
+    field:      [[0, 0.4], [1, 0.25]],
   },
   {
     id: 'system',
-    // The gallery is the content; the film drops to a backdrop.
-    frames:     [[0, 214], [1, 232]],
-    opacity:    [[0, 0.6], [0.2, 0.16], [0.85, 0.16], [1, 0.1]],
-    brightness: [[0, 0.8], [0.2, 0.5], [1, 0.45]],
-    scale:      [[0, 1.01], [1, 1.05]],
-    blur:       [[0, 0], [0.2, 1.5], [1, 1.5]],
-    text:       [[0, 1], [1, 1]],
+    // IMMERSION, by way of the one transition nobody expects. Shadow closes
+    // in until only the crown ring remains; the camera travels into it; its
+    // circle leaves as a wave; the wave clears the frame for the gallery.
+    // The film is dark by the time the camera snaps back at 0.4.
+    // Held through the zoom: at 2.4x, every small frame change would be
+    // magnified into a visible pop. It resumes once the frame is dark.
+    frames:     [[0, 214], [0.46, 214], [1, 232]],
+    aim:        [0.5, 0.078],
+    pull:       [[0, 0], [0.06, 0], [0.22, 0.8], [0.34, 1], [0.4, 1], [0.4, 0], [1, 0]],
+    scale:      [[0, 1.04], [0.06, 1.04], [0.34, 2.4], [0.4, 2.4], [0.4, 1.06], [1, 1.05]],
+    opacity:    [[0, 1], [0.3, 1], [0.38, 0], [0.46, 0], [0.56, 0.16], [1, 0.12]],
+    brightness: [[0, 1], [0.4, 0.8], [0.56, 0.5], [1, 0.45]],
+    text:       [[0, 0], [0.44, 0], [0.54, 1], [1, 1]],
+    cue:        'focus',
   },
   {
     id: 'presence',
@@ -600,66 +1207,104 @@ const TIMELINE = [
     opacity:    [[0, 0.1], [0.3, 0.28], [1, 0.3]],
     brightness: [[0, 0.5], [0.3, 0.7], [1, 0.7]],
     scale:      [[0, 1.05], [1, 1.02]],
-    blur:       [[0, 1.5], [0.3, 0.6], [1, 0.6]],
     text:       [[0, 1], [1, 1]],
   },
   {
     id: 'visualizer',
     // Instrument moment. The dial and the line are the subject; the render
-    // drops right back so both can actually be read against it. Brightening
-    // the render here buries the instrument drawn on top of it.
+    // drops right back so both can be read. It goes fully dark at the end,
+    // handing over to silence.
     frames:     [[0, 240], [1, 240]],
-    opacity:    [[0, 0.3], [0.25, 0.26], [0.8, 0.26], [1, 0.34]],
-    brightness: [[0, 0.7], [0.25, 0.55], [0.8, 0.55], [1, 0.68]],
+    opacity:    [[0, 0.3], [0.25, 0.26], [0.8, 0.26], [1, 0]],
+    brightness: [[0, 0.7], [0.25, 0.55], [0.8, 0.55], [1, 0.6]],
     scale:      [[0, 1.02], [1, 1.02]],
-    blur:       [[0, 0]],
     text:       [[0, 1], [1, 1]],
+  },
+  {
+    id: 'silence',
+    // SILENCE. Nothing moves. The absence is the point. Its two lines are
+    // paced by ui/beats.js, far slower than anything else on the page.
+    frames:     [[0, 240], [1, 240]],
+    opacity:    [[0, 0]],
+    brightness: [[0, 0.6]],
+    scale:      [[0, 1.02]],
+    text:       [[0, 1]],
   },
   {
     id: 'philosophy',
     // Text only. Near-empty black.
     frames:     [[0, 240], [1, 240]],
-    opacity:    [[0, 0.3], [0.25, 0.06], [0.8, 0.06], [1, 0.12]],
-    brightness: [[0, 0.7], [1, 0.5]],
+    opacity:    [[0, 0], [0.3, 0.06], [0.8, 0.06], [1, 0.12]],
+    brightness: [[0, 0.6], [1, 0.5]],
     scale:      [[0, 1.02], [1, 1.03]],
-    blur:       [[0, 0.6], [0.25, 1.5], [1, 1.5]],
     text:       [[0, 1], [1, 1]],
   },
   {
     id: 'reassembly',
-    // PRODUCT MOMENT. The reveal run backwards, with the same held stages.
+    // PRODUCT MOMENT. The disassembly run backwards with the same held
+    // stages, ending on the assembled pose the reveal is built around.
     frames: [
       [0, 240], [0.19, 176], [0.21, 176],
       [0.43, 144], [0.45, 144],
       [0.67, 120], [0.69, 120],
-      [0.90, 40], [1, 1],
+      [1, 72],
     ],
     opacity:    [[0, 0.12], [0.15, 1], [1, 1]],
     brightness: [[0, 0.5], [0.15, 1], [1, 1]],
     // Settles and holds, then the faintest push at the end.
     scale:      [[0, 1.03], [0.35, 1], [0.82, 1], [1, 1.02]],
-    blur:       [[0, 1.5], [0.15, 0], [1, 0]],
     text:       [[0, 0.8], [0.2, 0.28], [0.85, 0.28], [1, 0.6]],
+    field:      [[0, 0], [0.2, 0.7], [1, 0.6]],
+    studio:     [[0, 0.8]],
+  },
+  {
+    id: 'reveal',
+    // REVEAL. Everything goes dark, and a light travels the finished product
+    // — head, then body, then everything — while the line arrives. The
+    // headline recedes again once the product is fully lit.
+    frames:     [[0, 72], [1, 68]],
+    opacity:    [[0, 1]],
+    brightness: [[0, 1], [0.14, 0.85], [1, 1]],
+    scale:      [[0, 1.02], [0.14, 1], [1, 1.03]],
+    text:       [[0, 0], [0.42, 0], [0.56, 1], [0.72, 1], [0.84, 0.55], [1, 0.55]],
+    cue:        'reveal',
+    field:      [[0, 0], [0.84, 0], [1, 0.5]],
+    studio:     [[0, 0], [0.86, 0], [1, 0.8]],
   },
   {
     id: 'finale',
-    frames:     [[0, 1], [1, 1]],
+    // DESIRE. The hands close back over the face — the opening shot, in
+    // reverse, as the last frame of the film.
+    frames:     [[0, 68], [1, 1]],
     opacity:    [[0, 1], [0.3, 0.62], [1, 0.55]],
     brightness: [[0, 1], [0.3, 0.85], [1, 0.8]],
-    scale:      [[0, 1], [1, 1.06]],
-    blur:       [[0, 0]],
+    scale:      [[0, 1.03], [1, 1.08]],
     text:       [[0, 0.6], [0.25, 1], [1, 1]],
+    field:      [[0, 0.5], [1, 0.35]],
+    studio:     [[0, 0.8], [0.3, 0.4]],
   },
 ];
 
 const timelineFor = (id) => TIMELINE.find((t) => t.id === id);
 
 /* ── js/fx/energy.js ─────────────────────────────── */
-/* Act 03 — sound as energy.
+/* Act 03 — the power-up.
 
-   A single point of charge appears, pulses, and expands into concentric
-   rings that resolve into the structure of the product. Everything is
-   driven by act progress, so it scrubs backwards as cleanly as forwards. */
+   The product is gone and a single point of charge is all that is left. It
+   pulses, then pushes out waves. The waves collapse back onto one acoustic
+   ring, and the ring releases outward — and the product is inside it,
+   formed from the sound, lit by the ring's own edge as it passes (that
+   lighting lives in film/cues.js; this layer draws the sound).
+
+     0.00 – 0.30   the point of charge
+     0.10 – 0.62   waves expand
+     0.62 – 0.78   waves collapse onto one ring
+     0.78 – 1.00   the ring releases
+
+   Driven entirely by act progress, so it plays backwards as cleanly as
+   forwards. */
+
+
 
 
 const RING_COUNT = 7;
@@ -681,6 +1326,7 @@ class EnergyField {
     this.w = w;
     this.h = h;
     this.max = Math.hypot(w, h) * 0.5;
+    this.r0 = Math.min(w, h) * 0.09;
 
     const count = w < 780 ? 26 : 54;
     this.particles = Array.from({ length: count }, () => ({
@@ -700,64 +1346,91 @@ class EnergyField {
     }
   }
 
+  #ring(cx, cy, r, alpha, width = 1.2) {
+    const { ctx } = this;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(200, 216, 255, ${alpha})`;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+
   render(_dt, now) {
     if (!this.on) return;
 
-    const { ctx, w, h } = this;
+    const { ctx, w, h, r0 } = this;
     const p = this.progress;
-    const cx = w / 2;
-    const cy = h * 0.46;
+    const cx = w * ORIGIN.x;
+    const cy = h * ORIGIN.y;
     const t = now * 0.001;
+    const still = prefersReducedMotion();
 
     ctx.clearRect(0, 0, w, h);
 
-    // Overall presence: in quickly, out at the very end as the product arrives
-    const alpha = mapRange(p, 0, 0.12) * (1 - mapRange(p, 0.88, 1));
+    const enter = mapRange(p, 0, 0.1);
+    const collapse = easeInOut(mapRange(p, POWERUP.converge, POWERUP.reveal));
 
     // ── The point of charge ────────────────────────────────────────────
-    const pulse = prefersReducedMotion() ? 0 : Math.sin(t * 2.4) * 0.5 + 0.5;
-    const coreR = (2.5 + pulse * 2.2) * (1 + p * 1.5);
-    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 26);
-    glow.addColorStop(0, `rgba(190, 210, 255, ${0.9 * alpha})`);
-    glow.addColorStop(0.18, `rgba(110, 140, 255, ${0.38 * alpha})`);
-    glow.addColorStop(1, 'rgba(47, 85, 232, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(cx - coreR * 26, cy - coreR * 26, coreR * 52, coreR * 52);
-
-    // ── Expanding rings ────────────────────────────────────────────────
-    const spread = easeOut(mapRange(p, 0.1, 0.92));
-    for (let i = 0; i < RING_COUNT; i += 1) {
-      const phase = i / RING_COUNT;
-      const drift = prefersReducedMotion() ? 0 : (t * 0.08) % 1;
-      const r = ((phase + drift + spread) % 1) * this.max * (0.35 + spread * 0.8);
-      if (r < 4) continue;
-
-      const fade = (1 - r / (this.max * 1.15)) * alpha;
-      if (fade <= 0) continue;
-
-      // A copper undertone on the outermost rings keeps it from going cold
-      const warm = mapRange(r, this.max * 0.5, this.max * 1.1);
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(${110 + warm * 130}, ${140 - warm * 30}, ${255 - warm * 180}, ${fade * 0.34})`;
-      ctx.lineWidth = 1 + (1 - warm) * 0.6;
-      ctx.stroke();
+    // Holds until the waves have collapsed onto the ring, then it is spent.
+    const pointAlpha = enter * (1 - mapRange(p, POWERUP.converge + 0.08, POWERUP.reveal));
+    if (pointAlpha > 0.002) {
+      const pulse = still ? 0.5 : Math.sin(t * 2.4) * 0.5 + 0.5;
+      const coreR = (2.5 + pulse * 2.2) * (1 + Math.min(p, POWERUP.converge) * 1.5);
+      const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 26);
+      glow.addColorStop(0, `rgba(190, 210, 255, ${0.9 * pointAlpha})`);
+      glow.addColorStop(0.18, `rgba(110, 140, 255, ${0.38 * pointAlpha})`);
+      glow.addColorStop(1, 'rgba(47, 85, 232, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(cx - coreR * 26, cy - coreR * 26, coreR * 52, coreR * 52);
     }
 
-    // ── Particles riding the wavefront ─────────────────────────────────
-    ctx.fillStyle = `rgba(200, 216, 255, ${0.5 * alpha})`;
-    for (const particle of this.particles) {
-      const r = ((particle.r + spread * particle.speed) % 1) * this.max;
-      const x = cx + Math.cos(particle.a) * r;
-      const y = cy + Math.sin(particle.a) * r * 0.82;
-      const fade = (1 - r / this.max) * alpha;
-      if (fade <= 0) continue;
-      ctx.globalAlpha = fade * 0.6;
-      ctx.beginPath();
-      ctx.arc(x, y, particle.size, 0, Math.PI * 2);
-      ctx.fill();
+    // ── Waves, then their collapse onto one ring ───────────────────────
+    const wavesAlpha = enter * (1 - mapRange(p, POWERUP.reveal - 0.03, POWERUP.reveal));
+    if (wavesAlpha > 0.002) {
+      const spread = easeOut(mapRange(p, 0.1, POWERUP.converge));
+      const drift = still ? 0 : (t * 0.08) % 1;
+      for (let i = 0; i < RING_COUNT; i += 1) {
+        const free = ((i / RING_COUNT + drift + spread) % 1) * this.max * (0.35 + spread * 0.8);
+        const r = lerp(free, r0, collapse);
+        if (r < 4) continue;
+        const fade = lerp(1 - r / (this.max * 1.15), 0.9, collapse) * wavesAlpha;
+        if (fade <= 0) continue;
+        // A copper undertone on the outermost waves keeps it from going cold.
+        const warm = mapRange(r, this.max * 0.5, this.max * 1.1) * (1 - collapse);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${110 + warm * 130}, ${140 - warm * 30}, ${255 - warm * 180}, ${fade * lerp(0.34, 0.22, collapse)})`;
+        ctx.lineWidth = 1 + (1 - warm) * 0.6;
+        ctx.stroke();
+      }
+      // The ring they collapse into, gaining definition as they arrive.
+      if (collapse > 0) this.#ring(cx, cy, r0, 0.75 * collapse * wavesAlpha, 1.4);
     }
-    ctx.globalAlpha = 1;
+
+    // ── The ring releases ──────────────────────────────────────────────
+    const ring = powerupRing(p, w, h);
+    if (ring) {
+      const fade = Math.pow(1 - ring.t, 1.2);
+      this.#ring(ring.x, ring.y, ring.r, 0.75 * fade, 1.4);
+      this.#ring(ring.x, ring.y, ring.r * 0.94, 0.25 * fade, 1);
+    }
+
+    // ── Particles ride the wavefront, and fall away before the collapse ─
+    const dustAlpha = enter * (1 - mapRange(p, POWERUP.converge - 0.04, POWERUP.converge + 0.08));
+    if (dustAlpha > 0.002) {
+      const spread = easeOut(mapRange(p, 0.1, 0.92));
+      ctx.fillStyle = 'rgb(200, 216, 255)';
+      for (const particle of this.particles) {
+        const r = ((particle.r + spread * particle.speed) % 1) * this.max;
+        const fade = (1 - r / this.max) * dustAlpha;
+        if (fade <= 0) continue;
+        ctx.globalAlpha = fade * 0.3;
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(particle.a) * r, cy + Math.sin(particle.a) * r * 0.82, particle.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
   }
 }
 
@@ -775,7 +1448,11 @@ class EnergyField {
    draw calls a frame rather than one per bar. */
 
 
+
+
 const ALPHA_BUCKETS = 4;
+/* Bars around the dial at quality levels 0, 1, 2. */
+const BAR_COUNTS = [84, 156, 156];
 const TICKS = 84;
 
 class Visualizer {
@@ -787,6 +1464,7 @@ class Visualizer {
 
     this.pointer = { x: 0.5, y: 0.5 };
     this.eased = { x: 0.5, y: 0.5 };
+    this.bars = BAR_COUNTS[2];
     this.energy = 0;
     this.resize();
   }
@@ -803,7 +1481,6 @@ class Visualizer {
        dial reaches 1.76R and bars peak at 1.64R, both inside the viewport
        when centred, with the headline sitting inside the bar ring. */
     this.radius = Math.min(w, h) * (narrow ? 0.3 : 0.24);
-    this.bars = narrow ? 84 : 156;
   }
 
   setProgress(p) {
@@ -815,9 +1492,13 @@ class Visualizer {
     }
   }
 
-  movePointer(x, y) {
-    const nx = x / this.w;
-    const ny = y / this.h;
+  /** Reads the shared pointer once a frame. How far it travelled since the
+      last frame is what charges the instrument. */
+  #sense() {
+    const p = stage.pointer;
+    if (!p.inside) return;
+    const nx = p.x / this.w;
+    const ny = p.y / this.h;
     const travel = Math.hypot(nx - this.pointer.x, ny - this.pointer.y);
     this.energy = clamp(this.energy + travel * 5.5, 0, 1);
     this.pointer.x = nx;
@@ -859,6 +1540,11 @@ class Visualizer {
     const { ctx, w, h } = this;
     const t = now * 0.001;
     const still = prefersReducedMotion();
+
+    this.#sense();
+    // The dial is this act's subject, so it keeps its detail at level 1 and
+    // only thins out when the device is genuinely struggling.
+    this.bars = this.w < 780 ? BAR_COUNTS[0] : BAR_COUNTS[quality.level];
 
     const k = damp(0.08, dt);
     this.eased.x = lerp(this.eased.x, this.pointer.x, k);
@@ -954,6 +1640,143 @@ class Visualizer {
   }
 }
 
+/* ── js/fx/field.js ─────────────────────────────── */
+/* The sound field — the invisible field the product gives off.
+
+   Only ever a supporting layer. Three hairline rings leave the product and
+   dissolve, and a little dust hangs in the air around it. The dust has
+   depth: each mote lags behind the scroll by an amount set by how far back
+   it sits, so the 2D frame reads as having space in front of and behind it.
+   Hard ceilings keep it quiet — no ring above 7% opacity, no mote above 30%.
+
+   Also carries the transition wave: the crown ring's circle travelling out
+   across the frame at the start of Act 06.
+
+   Drawn at 1x. Everything here is soft, and a full-screen layer that repaints
+   every frame should cost as little as possible. When there is nothing to
+   draw the layer is switched off entirely, so the compositor stops blending
+   an empty full-screen canvas. Priority 4 in the quality governor: it thins
+   out, then stops, before the film is ever touched. */
+
+
+
+const RINGS = 3;
+const DEPTH_BUCKETS = 3;
+
+class SoundField {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.dirty = false;
+    this.visible = false;
+    this.inertia = 0;
+    this.resize();
+  }
+
+  resize() {
+    const { w, h } = sizeCanvas(this.canvas, this.ctx, 1);
+    this.w = w;
+    this.h = h;
+    const count = w < 780 ? 16 : 36;
+    this.motes = Array.from({ length: count }, () => ({
+      a: Math.random() * Math.PI * 2,
+      r: 0.3 + Math.random() * 0.45,
+      depth: 0.25 + Math.random() * 0.75,
+      size: 0.6 + Math.random() * 0.9,
+      // Very slow orbit, in both directions, so nothing reads as a swirl.
+      spin: (Math.random() - 0.5) * 0.00006,
+    }));
+  }
+
+  #clear() {
+    this.ctx.clearRect(0, 0, this.w, this.h);
+  }
+
+  #show(on) {
+    if (on === this.visible) return;
+    this.visible = on;
+    this.canvas.classList.toggle('is-on', on);
+  }
+
+  /**
+   * @param {number} dt
+   * @param {number} now
+   * @param {{ intensity:number, x:number, y:number, scale:number, velocity:number,
+   *           wave: { x:number, y:number, r:number, alpha:number } | null }} state
+   */
+  render(dt, now, { intensity, x, y, scale, velocity, wave }) {
+    const ambient = prefersReducedMotion() || quality.level === 0 ? 0 : intensity;
+    if (ambient < 0.005 && !wave) {
+      if (this.dirty) {
+        this.#clear();
+        this.dirty = false;
+      }
+      this.#show(false);
+      return;
+    }
+    this.#show(true);
+
+    const { ctx, w, h } = this;
+    this.#clear();
+    this.dirty = true;
+
+    if (ambient >= 0.005) {
+      const t = now * 0.001;
+      const m = Math.min(w, h) * scale;
+
+      // ── Rings leaving the product ────────────────────────────────────
+      ctx.lineWidth = 1;
+      for (let i = 0; i < RINGS; i += 1) {
+        const phase = (t * 0.075 + i / RINGS) % 1;
+        const r = lerp(0.2, 0.72, phase) * m;
+        const alpha = Math.sin(phase * Math.PI) * 0.07 * ambient;
+        if (alpha < 0.003) continue;
+        // A barely-there breathing of the ellipse — field, not geometry.
+        const wobble = 1 + Math.sin(t * 0.6 + i * 2.1) * 0.015;
+        ctx.beginPath();
+        ctx.ellipse(x, y, r * wobble, r * 0.9, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(150, 178, 255, ${alpha})`;
+        ctx.stroke();
+      }
+
+      // ── Dust, with depth ─────────────────────────────────────────────
+      // Motes trail the scroll and settle back: nearer ones trail further.
+      this.inertia = lerp(this.inertia, clamp(-velocity * 6, -60, 60), damp(0.06, dt));
+      const buckets = Array.from({ length: DEPTH_BUCKETS }, () => new Path2D());
+      // Under pressure, every second mote.
+      const stride = quality.level >= 2 ? 1 : 2;
+      for (let i = 0; i < this.motes.length; i += stride) {
+        const mote = this.motes[i];
+        mote.a += mote.spin * dt;
+        const mx = x + Math.cos(mote.a) * mote.r * m * 1.25;
+        const my = y + Math.sin(mote.a) * mote.r * m * 0.8 + this.inertia * mote.depth;
+        const size = mote.size * (0.6 + mote.depth * 0.6);
+        const path = buckets[Math.min(DEPTH_BUCKETS - 1, Math.floor(mote.depth * DEPTH_BUCKETS))];
+        path.moveTo(mx + size, my);
+        path.arc(mx, my, size, 0, Math.PI * 2);
+      }
+      buckets.forEach((path, b) => {
+        ctx.fillStyle = `rgba(200, 216, 255, ${0.3 * ambient * ((b + 1) / DEPTH_BUCKETS)})`;
+        ctx.fill(path);
+      });
+    }
+
+    // ── The transition wave ────────────────────────────────────────────
+    if (wave && wave.alpha > 0.003) {
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(wave.x, wave.y, wave.r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(200, 216, 255, ${wave.alpha})`;
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(wave.x, wave.y, wave.r * 0.93, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(150, 178, 255, ${wave.alpha * 0.35})`;
+      ctx.stroke();
+    }
+  }
+}
+
 /* ── js/ui/preloader.js ─────────────────────────────── */
 /* Preloader — a black screen, a hairline meter and a count.
    Holds the page still until the opening frames are decoded. */
@@ -986,7 +1809,8 @@ class Preloader {
   async done() {
     this.set(1);
     this.count.textContent = '100';
-    await new Promise((r) => setTimeout(r, 420));
+    // Just long enough for the count to read 100 — not a wait.
+    await new Promise((r) => setTimeout(r, 120));
     this.root.classList.add('is-done');
     document.body.classList.remove('is-locked');
     setTimeout(() => this.root.remove(), 1300);
@@ -1046,50 +1870,102 @@ function initNav(nav, links) {
 }
 
 /* ── js/ui/cursor.js ─────────────────────────────── */
-/* A soft light that trails the pointer. Pointer devices only. */
+/* Custom cursor — fine pointers only, and deliberately small.
+
+     default   a soft 6px dot with a quiet ring trailing it
+     link      the ring opens a little over anything clickable
+     focus     over a hotspot the ring tightens into a crosshair
+     product   over the product in a studio moment, a faint halo of light
+               follows — as if the pointer were carrying a small lamp
+
+   The dot is drawn exactly where the pointer is, every frame, with no
+   easing: a replacement cursor that lags behind the hand feels broken. Only
+   the ring and the halo are allowed to trail. */
 
 
-function initCursor(el) {
-  if (isCoarsePointer() || prefersReducedMotion()) return;
 
-  const target = { x: innerWidth / 2, y: innerHeight / 2 };
-  const eased = { ...target };
+const INTERACTIVE = 'a, button, [data-magnetic], .card';
 
-  addEventListener('pointermove', (e) => {
-    target.x = e.clientX;
-    target.y = e.clientY;
-    el.classList.add('is-on');
-  }, { passive: true });
+function initCursor(root) {
+  if (!root || isCoarsePointer() || prefersReducedMotion()) return;
 
-  addEventListener('pointerleave', () => el.classList.remove('is-on'), { passive: true });
+  document.documentElement.classList.add('has-cursor');
+
+  const dot = root.querySelector('.cursor__dot');
+  const ring = root.querySelector('.cursor__ring');
+  const halo = root.querySelector('.cursor__halo');
+
+  const ringAt = { x: stage.pointer.x, y: stage.pointer.y };
+  const haloAt = { ...ringAt };
+  const last = { dot: '', ring: '', halo: '' };
+  let hover = 'default';
+  let shown = null;
+
+  document.addEventListener('pointerover', (e) => {
+    const el = e.target instanceof Element ? e.target : null;
+    hover = el?.closest('.hotspot') ? 'focus' : el?.closest(INTERACTIVE) ? 'link' : 'default';
+  });
+
+  // The individual `translate` property, not `transform`: each part also
+  // takes a per-state CSS `scale`, and with transform the scale would
+  // multiply the translation and pull the ring away from the pointer.
+  const place = (node, key, x, y) => {
+    const t = `${x.toFixed(1)}px ${y.toFixed(1)}px`;
+    if (last[key] !== t) {
+      last[key] = t;
+      node.style.translate = t;
+    }
+  };
 
   onTick((dt) => {
-    const k = damp(0.12, dt);
-    eased.x = lerp(eased.x, target.x, k);
-    eased.y = lerp(eased.y, target.y, k);
-    el.style.transform = `translate3d(${eased.x}px, ${eased.y}px, 0)`;
+    const p = stage.pointer;
+    if (p.inside !== shown) {
+      shown = p.inside;
+      root.classList.toggle('is-on', shown);
+    }
+    if (!shown) return;
+
+    ringAt.x = lerp(ringAt.x, p.x, damp(0.3, dt));
+    ringAt.y = lerp(ringAt.y, p.y, damp(0.3, dt));
+    haloAt.x = lerp(haloAt.x, p.x, damp(0.12, dt));
+    haloAt.y = lerp(haloAt.y, p.y, damp(0.12, dt));
+
+    place(dot, 'dot', p.x, p.y);
+    place(ring, 'ring', ringAt.x, ringAt.y);
+    place(halo, 'halo', haloAt.x, haloAt.y);
+
+    // "Over the product" only means something while the product is the
+    // subject and actually lit.
+    const prod = stage.product;
+    const reach = Math.min(innerWidth, innerHeight) * 0.34 * stage.camera.scale;
+    const overProduct =
+      prod.studio > 0.3 && prod.presence > 0.6 && Math.hypot(p.x - prod.x, p.y - prod.y) < reach;
+
+    const state = hover !== 'default' ? hover : overProduct ? 'product' : 'default';
+    if (root.dataset.state !== state) root.dataset.state = state;
   });
 }
 
 /* ── js/ui/magnetic.js ─────────────────────────────── */
 /* Magnetic hover — elements lean towards the pointer within a radius.
-   Subtle on purpose: a few pixels, never a jump. */
+   Subtle on purpose: a few pixels, never a jump.
+
+   Geometry is read in the ticker's read phase, before anything in the
+   frame has written styles, so measuring never forces a synchronous
+   layout. It is re-read a few times a second, not every frame: these
+   elements barely move. The pointer comes from the shared stage. */
+
 
 
 const RADIUS = 90;
 const PULL = 0.32;
-/* How often geometry is re-read. Reading layout in the animation loop
-   forces a synchronous reflow, and doing it per element per frame was
-   costing several forced layouts every single frame. These elements barely
-   move, so measuring a few times a second is indistinguishable. */
 const MEASURE_INTERVAL = 120;
 
 function initMagnetic(nodes) {
   if (isCoarsePointer() || prefersReducedMotion()) return;
 
-  const items = nodes.map((el) => ({ el, x: 0, y: 0, cx: 0, cy: 0, reach: 0 }));
-  const pointer = { x: -9999, y: -9999 };
-  let lastMeasure = 0;
+  const items = nodes.map((el) => ({ el, x: 0, y: 0, cx: 0, cy: 0, reach: 0, last: '' }));
+  let lastMeasure = -Infinity;
 
   const measure = () => {
     for (const item of items) {
@@ -1100,46 +1976,84 @@ function initMagnetic(nodes) {
     }
   };
 
-  measure();
-  onResize(measure);
-
-  addEventListener('pointermove', (e) => {
-    pointer.x = e.clientX;
-    pointer.y = e.clientY;
-  }, { passive: true });
+  onResize(() => { lastMeasure = -Infinity; });
 
   onTick((dt, now) => {
-    // One batched read, well apart from the writes below.
     if (now - lastMeasure > MEASURE_INTERVAL) {
       lastMeasure = now;
       measure();
     }
+  }, { phase: 'read' });
 
+  onTick((dt) => {
+    const p = stage.pointer;
     const k = damp(0.16, dt);
     for (const item of items) {
-      const dx = pointer.x - item.cx;
-      const dy = pointer.y - item.cy;
-      const near = Math.hypot(dx, dy) < item.reach;
+      const dx = p.x - item.cx;
+      const dy = p.y - item.cy;
+      const near = p.inside && Math.hypot(dx, dy) < item.reach;
 
       item.x = lerp(item.x, near ? dx * PULL : 0, k);
       item.y = lerp(item.y, near ? dy * PULL : 0, k);
 
-      item.el.style.transform =
-        Math.abs(item.x) < 0.05 && Math.abs(item.y) < 0.05
-          ? ''
-          : `translate3d(${item.x}px, ${item.y}px, 0)`;
+      const settled = Math.abs(item.x) < 0.05 && Math.abs(item.y) < 0.05;
+      const transform = settled ? '' : `translate3d(${item.x.toFixed(2)}px, ${item.y.toFixed(2)}px, 0)`;
+      if (transform !== item.last) {
+        item.last = transform;
+        item.el.style.transform = transform;
+      }
     }
   });
 }
 
 /* ── js/ui/reveal.js ─────────────────────────────── */
-/* Text and block reveals.
+/* Reveals.
 
-   Words ride up out of their own clip mask, staggered. Everything is
-   triggered once, by IntersectionObserver, so reveals never re-fire and
-   never fight the scroll. */
+   Two kinds, deliberately:
 
-const WORD_MARGIN = '0px 0px -12% 0px';
+     intro   the hero's opening lines. Played once, on a timeline, when the
+             curtain lifts — there is no scroll yet to drive them, and the
+             first seconds should play like a title sequence.
+     scroll  everything else. A pure function of scroll position: no
+             duration, no delay, no one-shot class. A line arrives as its
+             act slides into view, is complete as the act pins, and plays
+             backwards when scrolled back — always in step with the film,
+             because it reads the same clock in the same frame.
+
+   A scroll reveal writes one number, --reveal (0..1), on its element. CSS
+   turns that into opacity and transform; words and staggered children
+   offset it by their own index, so a whole line cascades from a single
+   write per frame. */
+
+
+
+/* Entry window, in viewport-heights relative to the act's pin point: from
+   half a screen before it pins until it pins. */
+const ENTRY_FROM = -0.5;
+const ENTRY_TO = -0.02;
+/* Each later reveal in the same act starts this much later. */
+const SEQUENCE_STEP = 0.07;
+/* data-reveal-at="p": starts at act progress p and takes this long. For
+   lines that must wait for something inside a pinned act. */
+const TIMED_SPAN = 0.08;
+
+const SELECTOR = '[data-reveal], [data-reveal-words], [data-stagger]';
+
+/**
+ * Writes --reveal (0..1) on an element, only when it changed, and marks it
+ * .is-revealing while it is part-way — the only time it is worth giving it
+ * its own compositor layer. Shared with ui/beats.js.
+ */
+function createRevealWriter() {
+  const last = new WeakMap();
+  return (el, amount) => {
+    const value = amount.toFixed(3);
+    if (last.get(el) === value) return;
+    last.set(el, value);
+    el.style.setProperty('--reveal', value);
+    el.classList.toggle('is-revealing', amount > 0.0005 && amount < 0.9995);
+  };
+}
 
 /** Wrap each word in a mask, leaving <br> and other elements untouched. */
 function splitWords(el) {
@@ -1169,40 +2083,67 @@ function splitWords(el) {
       el.appendChild(mask);
     }
   }
+  el.style.setProperty('--n', String(index));
 }
 
-function applyDelay(el) {
-  const delay = el.dataset.revealDelay;
-  if (delay) el.style.setProperty('--d', `${delay}ms`);
+function indexChildren(group) {
+  const children = [...group.children];
+  children.forEach((child, i) => child.style.setProperty('--i', String(i)));
+  group.style.setProperty('--n', String(children.length));
+}
+
+function playIntro(nodes) {
+  for (const el of nodes) {
+    el.classList.add('is-intro');
+    if (el.dataset.revealDelay) el.style.setProperty('--d', `${el.dataset.revealDelay}ms`);
+  }
+  // Next frame, so the starting state is committed before it transitions.
+  requestAnimationFrame(() => nodes.forEach((el) => el.classList.add('is-in')));
+}
+
+function bindScroll(nodes) {
+  const order = new Map();
+  const items = [];
+
+  for (const el of nodes) {
+    const act = actById(el.closest('.act')?.dataset.act);
+    if (!act) {
+      el.style.setProperty('--reveal', '1');
+      continue;
+    }
+    if (el.dataset.revealAt !== undefined) {
+      const from = Number(el.dataset.revealAt);
+      items.push({ el, act, from, to: from + TIMED_SPAN, onPin: true });
+    } else {
+      const k = order.get(act) ?? 0;
+      order.set(act, k + 1);
+      items.push({
+        el,
+        act,
+        from: ENTRY_FROM + k * SEQUENCE_STEP,
+        to: ENTRY_TO + k * SEQUENCE_STEP,
+        onPin: false,
+      });
+    }
+  }
+
+  const write = createRevealWriter();
+  onTick(() => {
+    for (const item of items) {
+      if (!item.act.active) continue;
+      const at = item.onPin ? item.act.progress : item.act.local;
+      write(item.el, mapRange(at, item.from, item.to));
+    }
+  });
 }
 
 function initReveal() {
-  const words = [...document.querySelectorAll('[data-reveal-words]')];
-  words.forEach((el) => {
-    splitWords(el);
-    applyDelay(el);
-  });
+  const nodes = [...document.querySelectorAll(SELECTOR)];
+  nodes.filter((el) => el.hasAttribute('data-reveal-words')).forEach(splitWords);
+  nodes.filter((el) => el.hasAttribute('data-stagger')).forEach(indexChildren);
 
-  const plain = [...document.querySelectorAll('[data-reveal]')];
-  plain.forEach(applyDelay);
-
-  const groups = [...document.querySelectorAll('[data-stagger]')];
-  groups.forEach((group) => {
-    [...group.children].forEach((child, i) => child.style.setProperty('--i', String(i)));
-  });
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        entry.target.classList.add('is-in');
-        observer.unobserve(entry.target);
-      }
-    },
-    { rootMargin: WORD_MARGIN, threshold: 0.1 }
-  );
-
-  [...words, ...plain, ...groups].forEach((el) => observer.observe(el));
+  playIntro(nodes.filter((el) => el.closest('.act--hero')));
+  bindScroll(nodes.filter((el) => !el.closest('.act--hero')));
 }
 
 /* ── js/ui/rail.js ─────────────────────────────── */
@@ -1228,8 +2169,10 @@ function initRail(rail, track) {
 
   onTick(() => {
     if (!act.active) return;
-    // Hold briefly at each end so the cards are readable before they move
-    const p = easeInOut(clamp(mapRange(act.progress, 0.12, 0.88)));
+    // The act opens on the crown-ring transition; the gallery only arrives
+    // after it. Hold briefly at each end so cards are readable before and
+    // after they travel.
+    const p = easeInOut(clamp(mapRange(act.progress, 0.58, 0.94)));
     track.style.transform = `translate3d(${-distance * p}px, 0, 0)`;
   });
 }
@@ -1257,9 +2200,13 @@ function initParallax(layers) {
 }
 
 /* ── js/ui/beats.js ─────────────────────────────── */
-/* Scroll beats — things that switch on at a given point inside an act.
+/* Scroll beats — moments inside an act.
 
-   All of these share one job: read an act's progress, toggle a state. */
+   All of these share one job: read the act's progress and write how far in
+   each element is, as --reveal (0..1). No classes that trigger a timed CSS
+   transition: a beat decided by scroll is animated by scroll, so it can
+   never lag behind it or play on after the hand has stopped. */
+
 
 
 
@@ -1268,41 +2215,13 @@ function initStatements(nodes) {
   const act = actById('purpose');
   if (!act) return;
   const cues = [0.16, 0.4, 0.64];
+  const set = createRevealWriter();
 
   onTick(() => {
     if (!act.active) return;
-    nodes.forEach((el, i) => {
-      el.classList.toggle('is-on', act.progress >= cues[i] && act.progress < 0.97);
-    });
-  });
-}
-
-/** Act 04 — hotspots and the component ticker, live only while fully exploded. */
-function initExplodeOverlay(hotspots, ticker, tickerText) {
-  const act = actById('explode');
-  if (!act || !hotspots) return;
-
-  const labels = [...hotspots.querySelectorAll('.hotspot')].map((h) => h.dataset.kind);
-  let shown = '';
-
-  hotspots.querySelectorAll('.hotspot').forEach((spot) => {
-    spot.setAttribute('aria-label', spot.dataset.label);
-    spot.addEventListener('pointerenter', () => {
-      tickerText.textContent = spot.dataset.label;
-      shown = spot.dataset.label;
-    });
-    spot.addEventListener('pointerleave', () => { shown = ''; });
-  });
-
-  onTick(() => {
-    if (!act.active) return;
-    const live = act.progress > 0.52 && act.progress < 0.96;
-    hotspots.classList.toggle('is-on', live);
-    ticker.classList.toggle('is-on', live);
-
-    if (!live || shown) return;
-    const i = Math.min(labels.length - 1, Math.floor(mapRange(act.progress, 0.52, 0.96) * labels.length));
-    if (tickerText.textContent !== labels[i]) tickerText.textContent = labels[i];
+    const p = act.progress;
+    const leaving = 1 - mapRange(p, 0.9, 0.97);
+    nodes.forEach((el, i) => set(el, mapRange(p, cues[i], cues[i] + 0.1) * leaving));
   });
 }
 
@@ -1312,27 +2231,329 @@ function initCreed(creed) {
   if (!act || !creed) return;
 
   const words = [...creed.querySelectorAll('span')];
+  const set = createRevealWriter();
 
   onTick(() => {
     if (!act.active) return;
-    // Spread the words across the middle of the act, then hold
+    // Spread the words across the middle of the act, then hold. Each word
+    // takes one word's worth of scroll to arrive.
     const reached = mapRange(act.progress, 0.12, 0.72) * words.length;
-    words.forEach((word, i) => word.classList.toggle('is-on', reached > i));
+    words.forEach((word, i) => set(word, clamp(reached - i)));
   });
 }
 
-/** The top progress bar. */
-function initProgressBar(bar) {
+/** Silence — two small lines on black, paced slower than anything else on
+    the page. Nothing else moves while they arrive. */
+function initSilence(root) {
+  const act = actById('silence');
+  if (!act || !root) return;
+
+  const listen = root.querySelector('.silence__listen');
+  const wait = root.querySelector('.silence__wait');
+  const last = { listen: '', wait: '' };
+
+  const set = (el, key, amount) => {
+    const value = `${amount.toFixed(3)}|${((1 - amount) * 10).toFixed(1)}`;
+    if (last[key] === value) return;
+    last[key] = value;
+    el.style.opacity = amount.toFixed(3);
+    el.style.transform = `translate3d(0, ${((1 - amount) * 10).toFixed(1)}px, 0)`;
+  };
+
   onTick(() => {
-    bar.style.transform = `scaleX(${clamp(scroll.progress)})`;
+    if (!act.active) return;
+    const p = act.progress;
+    const leaving = 1 - mapRange(p, 0.88, 1);
+    set(listen, 'listen', mapRange(p, 0.1, 0.36) * leaving);
+    set(wait, 'wait', mapRange(p, 0.48, 0.72) * leaving);
   });
 }
 
 function initBeats(refs) {
   initStatements(refs.statements);
-  initExplodeOverlay(refs.hotspots, refs.ticker, refs.tickerText);
   initCreed(refs.creed);
-  initProgressBar(refs.progressBar);
+  initSilence(refs.silence);
+}
+
+/* ── js/ui/hotspots.js ─────────────────────────────── */
+/* Act 04 — components you can put under the light.
+
+   Four parts, no more. Hovering one brings it up into light and lets the
+   rest of the assembly drop back (film/cues.js draws that); a hairline
+   leader carries a small technical label out to the side. On the two parts
+   that matter most, holding the hover — or a click / tap — goes one step
+   further into focus mode: the light tightens, the camera leans in, and a
+   line of supporting copy arrives. Leave, and everything settles back.
+
+   Each hotspot is placed from its component's art-space position, through
+   the live camera, every frame — so it stays on the part through the push
+   and on every aspect ratio. */
+
+
+
+
+
+
+/** Act progress over which the assembly is open enough to explore. */
+const LIVE_FROM = 0.52;
+const LIVE_TO = 0.96;
+/** Hover time before a focusable part goes into focus mode. */
+const HOLD_TO_FOCUS = 650;
+/** Below this width the callout docks at the bottom of the frame instead
+    of following the part. */
+const NARROW = 860;
+
+function initHotspots({ root, callout, film }) {
+  const act = actById('explode');
+  if (!act || !root || !callout) return;
+
+  const spots = [...root.querySelectorAll('.hotspot')]
+    .map((el) => ({ el, id: el.dataset.id, part: COMPONENTS[el.dataset.id], x: 0, y: 0, last: '' }))
+    .filter((s) => s.part);
+
+  const text = {
+    kind: callout.querySelector('.callout__kind'),
+    label: callout.querySelector('.callout__label'),
+    note: callout.querySelector('.callout__note'),
+    coords: callout.querySelector('.callout__coords'),
+    focus: callout.querySelector('.callout__focus'),
+  };
+
+  const spot = stage.hotspot;
+  let hovered = null;
+  let pinned = null;
+  let focusTarget = 0;
+  let holdTimer = 0;
+  let live = false;
+  let layerOpacity = '';
+  let calloutKey = '';
+
+  const fill = (s) => {
+    const { dataset } = s.el;
+    text.kind.textContent = dataset.kind;
+    text.label.textContent = dataset.label;
+    text.note.textContent = dataset.note;
+    text.coords.textContent = `U ${s.part.u.toFixed(3)} · V ${s.part.v.toFixed(3)}`;
+    text.focus.textContent = dataset.focusNote ?? '';
+    callout.classList.toggle('callout--left', dataset.side === 'left');
+  };
+
+  const enter = (s) => {
+    hovered = s;
+    fill(s);
+    clearTimeout(holdTimer);
+    if (s.el.dataset.focusNote) {
+      holdTimer = setTimeout(() => { if (hovered === s) focusTarget = 1; }, HOLD_TO_FOCUS);
+    }
+  };
+
+  const leave = (s) => {
+    if (hovered === s) hovered = null;
+    clearTimeout(holdTimer);
+    if (!pinned) focusTarget = 0;
+  };
+
+  const release = () => {
+    if (pinned) pinned.el.setAttribute('aria-pressed', 'false');
+    pinned = null;
+    focusTarget = 0;
+  };
+
+  for (const s of spots) {
+    // Touch gets click only — a tap fires pointerenter too, and hover makes
+    // no sense without a pointer that can rest.
+    s.el.addEventListener('pointerenter', (e) => { if (e.pointerType !== 'touch') enter(s); });
+    s.el.addEventListener('pointerleave', () => leave(s));
+    s.el.addEventListener('focus', () => enter(s));
+    s.el.addEventListener('blur', () => leave(s));
+    s.el.addEventListener('click', () => {
+      if (pinned === s) return release();
+      release();
+      pinned = s;
+      hovered = s;
+      fill(s);
+      focusTarget = s.el.dataset.focusNote ? 1 : 0;
+      s.el.setAttribute('aria-pressed', 'true');
+    });
+  }
+
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') release(); });
+
+  onTick((dt) => {
+    // The layer fades with scroll, not on a timer, so it arrives and leaves
+    // in step with the assembly opening and closing.
+    const fade = act.active
+      ? mapRange(act.progress, LIVE_FROM, LIVE_FROM + 0.04) * (1 - mapRange(act.progress, LIVE_TO - 0.04, LIVE_TO))
+      : 0;
+    const layer = fade.toFixed(3);
+    if (layer !== layerOpacity) {
+      layerOpacity = layer;
+      root.style.opacity = layer;
+    }
+
+    const nowLive = fade > 0.5;
+    if (nowLive !== live) {
+      live = nowLive;
+      root.classList.toggle('is-on', live);
+      if (!live) {
+        hovered = null;
+        clearTimeout(holdTimer);
+        release();
+      }
+    }
+
+    // Ease the light up and down; focus mode moves slower than hover.
+    const active = pinned ?? hovered;
+    spot.amount = lerp(spot.amount, active ? 1 : 0, damp(0.1, dt));
+    spot.focus = lerp(spot.focus, active ? focusTarget : 0, damp(0.06, dt));
+    if (active) spot.id = active.id;
+    else if (spot.amount < 0.01) {
+      spot.id = null;
+      spot.amount = 0;
+      spot.focus = 0;
+    }
+
+    if (!act.active) return;
+
+    // Keep every hotspot pinned to its part through the live camera.
+    const cam = stage.camera;
+    for (const s of spots) {
+      const c = film.artToCanvas(s.part.u, s.part.v);
+      const p = canvasToScreen(cam, c.x, c.y, film.w, film.h);
+      s.x = p.x;
+      s.y = p.y;
+      const transform = `translate3d(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px, 0)`;
+      if (transform !== s.last) {
+        s.last = transform;
+        s.el.style.transform = transform;
+      }
+    }
+
+    // The callout rides with the part under the light.
+    const target = spot.id ? spots.find((s) => s.id === spot.id) : null;
+    const docked = innerWidth < NARROW;
+    const transform = target && !docked ? `translate3d(${target.x.toFixed(1)}px, ${target.y.toFixed(1)}px, 0)` : '';
+    const opacity = target ? spot.amount.toFixed(3) : '0';
+    const focus = spot.focus.toFixed(3);
+    const key = `${transform}|${opacity}|${focus}`;
+    if (key !== calloutKey) {
+      calloutKey = key;
+      callout.style.transform = transform;
+      callout.style.opacity = opacity;
+      callout.style.setProperty('--focus', focus);
+    }
+  });
+}
+
+/* ── js/ui/markers.js ─────────────────────────────── */
+/* Engineering marker — the crosshair, hairlines and figure label that
+   annotate the crown ring as it is isolated at the start of Act 06.
+   Positioned from film/cues.js; this only writes what changed. */
+
+function initMarker(el) {
+  if (!el) return () => {};
+  let last = '';
+
+  return (marker) => {
+    const opacity = marker ? marker.opacity : 0;
+    const key = marker
+      ? `${opacity.toFixed(3)}|${Math.round(marker.x)}|${Math.round(marker.y)}|${Math.round(marker.r)}`
+      : 'off';
+    if (key === last) return;
+    last = key;
+
+    el.style.opacity = opacity.toFixed(3);
+    if (!marker) return;
+    el.style.transform = `translate3d(${marker.x.toFixed(1)}px, ${marker.y.toFixed(1)}px, 0)`;
+    // Sized rather than scaled: scaling would thicken the 1px border with it.
+    // It is one small absolutely-positioned box, live for a fraction of one
+    // act, so the layout it costs is negligible.
+    el.style.setProperty('--r', `${marker.r.toFixed(1)}px`);
+  };
+}
+
+/* ── js/ui/kinetic.js ─────────────────────────────── */
+/* Kinetic headlines.
+
+   On the handful of lines that carry the story, a pool of emphasis travels
+   across the words as the act plays — the word in the light at full, the
+   words around it a little quieter — so the line reads as if it is being
+   spoken rather than printed. Opacity only: the reveal owns the transform,
+   and nothing here can reflow.
+
+   data-kinetic="from,to" sets the stretch of act progress the emphasis
+   travels over. Outside it, every word is at full strength. */
+
+
+
+/** How far the words outside the light drop: 1 - DEPTH is the floor. */
+const DEPTH = 0.42;
+/** Width of the pool of light, in words. */
+const SPREAD = 0.7;
+
+function initKinetic() {
+  if (prefersReducedMotion()) return;
+
+  const lines = [...document.querySelectorAll('[data-kinetic]')]
+    .map((el) => {
+      const [from = 0.1, to = 0.85] = (el.dataset.kinetic || '').split(',').filter(Boolean).map(Number);
+      return {
+        act: actById(el.closest('.act')?.dataset.act),
+        words: [...el.querySelectorAll('.word')],
+        from,
+        to,
+        last: [],
+      };
+    })
+    .filter((line) => line.act && line.words.length > 1);
+
+  onTick(() => {
+    for (const line of lines) {
+      if (!line.act.active) continue;
+      const p = line.act.progress;
+      const engage = mapRange(p, line.from - 0.04, line.from + 0.04) * (1 - mapRange(p, line.to - 0.04, line.to + 0.04));
+      const lead = mapRange(p, line.from, line.to) * (line.words.length - 1);
+
+      line.words.forEach((word, i) => {
+        const d = lead - i;
+        const lit = Math.exp(-(d * d) / SPREAD);
+        const opacity = (1 - engage * DEPTH * (1 - lit)).toFixed(2);
+        if (line.last[i] !== opacity) {
+          line.last[i] = opacity;
+          word.style.opacity = opacity;
+        }
+      });
+    }
+  });
+}
+
+/* ── js/ui/ring.js ─────────────────────────────── */
+/* Scroll progress, as a small instrument rather than a bar: a hairline
+   ring around the ZILLOUT mark that closes as the film plays. It fades in
+   with scroll as the opening hands over — the hero owns the frame first. */
+
+
+
+function initRing(el, fill) {
+  const hero = actById('hero');
+  if (!el || !fill || !hero) return;
+
+  let opacity = '';
+  let offset = '';
+
+  onTick(() => {
+    const nextOpacity = mapRange(scroll.y, hero.top + hero.height * 0.7, hero.top + hero.height * 0.9).toFixed(3);
+    if (nextOpacity !== opacity) {
+      opacity = nextOpacity;
+      el.style.opacity = nextOpacity;
+    }
+    // pathLength="1" on the circle, so the offset is simply what is left.
+    const nextOffset = (1 - scroll.progress).toFixed(4);
+    if (nextOffset !== offset) {
+      offset = nextOffset;
+      fill.style.strokeDashoffset = nextOffset;
+    }
+  });
 }
 
 /* ── js/ui/debug.js ─────────────────────────────── */
@@ -1419,9 +2640,19 @@ function initDebug(loader) {
 /* ZILLOUT — entry point.
 
    The whole page is one continuous shot. A single fixed canvas plays a
-   240-frame sequence; each act owns a stretch of that sequence and a
-   visual treatment. Nothing else on the page has a background, so the
-   film shows through from the first pixel to the last. */
+   240-frame sequence; each act owns a stretch of that sequence, a camera, a
+   visual treatment and, at the key moments, a lighting cue. Nothing else on
+   the page has a background, so the film shows through from the first
+   pixel to the last. */
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1438,6 +2669,12 @@ function initDebug(loader) {
 
 
 const TOTAL_FRAMES = 240;
+/** Focus mode: how far the camera leans in, and towards, the part. */
+const FOCUS_LEAN = 0.04;
+const FOCUS_PULL = 0.12;
+/** Where the product's body sits in the frame, in art space — the source
+    of the sound field and the anchor of the studio light. */
+const PRODUCT_CENTRE = [0.5, 0.48];
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -1453,28 +2690,37 @@ function frameStep() {
 }
 
 function boot() {
+  // Scroll-driven content starts hidden only once JS is known to be running,
+  // so the page never blanks out if the script fails.
+  document.documentElement.classList.add('js');
+
   // Always open on frame one
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
   scrollTo(0, 0);
+
+  initStage();
+  initQuality();
 
   const filmEl = $('#film');
   const film = new FilmCanvas($('#film-canvas'));
   const energy = new EnergyField($('#fx-energy'));
   const visualizer = new Visualizer($('#fx-visualizer'));
+  const field = new SoundField($('#fx-field'));
 
   const actNodes = $$('.act');
   initScroll();
-  registerActs(actNodes);
+  registerActs(actNodes, timelineFor);
 
   const energyAct = actById('energy');
   const visualAct = actById('visualizer');
 
   const loader = new FrameLoader({ total: TOTAL_FRAMES, step: frameStep() });
   const debug = initDebug(loader);
+  const updateMarker = initMarker($('#marker'));
 
   // ── The film loop ────────────────────────────────────────────────────
   let lastFrame = -1;
-  let activeSticky = null;
+  let drawnFrame = null;
 
   const written = new Map();
   const write = (prop, value) => {
@@ -1484,59 +2730,110 @@ function boot() {
   };
 
   onTick((dt, now) => {
-    // Which act is the camera in?
+    // Which act is the camera in? Same scroll value, same frame, as every
+    // other scroll-linked thing on the page.
     let index = 0;
     for (let i = 0; i < acts.length; i += 1) {
-      if (scroll.smooth >= acts[i].top) index = i;
+      if (scroll.y >= acts[i].top) index = i;
     }
     const act = acts[index];
-    const cue = timelineFor(act.id);
+    const { cue } = act;
     if (!cue) return;
 
     const p = act.progress;
+    const { w, h } = film;
+    const spot = stage.hotspot;
 
-    // Redraw only when the frame actually changes
+    // ── Camera ──────────────────────────────────────────────────────────
+    let scale = sampleStops(cue.scale, p);
+    let tx = 0;
+    let ty = 0;
+    if (cue.aim) {
+      const pull = cue.pull ? sampleStops(cue.pull, p) : 0;
+      const a = film.artToCanvas(cue.aim[0], cue.aim[1]);
+      ({ tx, ty } = aimTranslate(a.x, a.y, scale, pull, w, h));
+    }
+    if (spot.id && spot.focus > 0.001) {
+      // Focus mode: the part cannot step forward in a flat render, so the
+      // camera leans a few percent in towards it instead.
+      const part = COMPONENTS[spot.id];
+      const a = film.artToCanvas(part.u, part.v);
+      scale *= 1 + FOCUS_LEAN * spot.focus;
+      const lean = aimTranslate(a.x, a.y, scale, FOCUS_PULL * spot.focus, w, h);
+      tx += lean.tx;
+      ty += lean.ty;
+    }
+    const cam = stage.camera;
+    cam.scale = scale;
+    cam.tx = tx;
+    cam.ty = ty;
+
+    // ── The product on screen ───────────────────────────────────────────
+    const opacity = sampleStops(cue.opacity, p);
+    const bright = sampleStops(cue.brightness, p);
+    const centre = film.artToCanvas(PRODUCT_CENTRE[0], PRODUCT_CENTRE[1]);
+    const onScreen = canvasToScreen(cam, centre.x, centre.y, w, h);
+    // Studio light is priority 4: only at full quality.
+    const studio = cue.studio && quality.level >= 2 ? sampleStops(cue.studio, p) * (1 - 0.7 * spot.amount) : 0;
+    Object.assign(stage.product, {
+      x: onScreen.x,
+      y: onScreen.y,
+      presence: opacity * Math.min(1, bright),
+      studio,
+    });
+
+    // ── Frame and light ─────────────────────────────────────────────────
     const rounded = Math.round(sampleStops(cue.frames, p, false));
     // Point background loading at where the scrub is, so the frames about
     // to be needed are the ones being fetched.
     loader.setPlayhead(rounded);
-    let drawnFrame = lastFrame;
+    const img = loader.nearest(rounded);
     if (rounded !== lastFrame) {
       lastFrame = rounded;
-      const img = loader.nearest(rounded);
-      film.draw(img);
       drawnFrame = img ? Number(img.src.match(/(\d+)\.jpg$/)?.[1] ?? rounded) : null;
     }
+    const { lighting, wave, marker } = computeCues({ cue, p, w, h, cam, film, stage, studio });
+    // Brightness is baked into the draw rather than applied as a CSS filter.
+    // Redraws only if the still, the lighting or the brightness changed.
+    film.draw(img, lighting, bright);
 
-    const blur = sampleStops(cue.blur, p);
-    const bright = sampleStops(cue.brightness, p);
-    const filter =
-      blur < 0.05 && Math.abs(bright - 1) < 0.004
-        ? 'none'
-        : blur < 0.05
-          ? `brightness(${bright.toFixed(3)})`
-          : `blur(${blur.toFixed(2)}px) brightness(${bright.toFixed(3)})`;
+    // Only touch the DOM when a value actually changed. Opacity and
+    // transform are the only properties the compositor sees on this layer.
+    write('--film-opacity', opacity.toFixed(3));
+    write('--film-scale', scale.toFixed(4));
+    write('--film-tx', `${tx.toFixed(1)}px`);
+    write('--film-ty', `${ty.toFixed(1)}px`);
 
-    // Only touch the DOM when a value actually changed: style writes on a
-    // fixed full-screen element invalidate every frame otherwise.
-    write('--film-opacity', sampleStops(cue.opacity, p).toFixed(3));
-    write('--film-scale', sampleStops(cue.scale, p).toFixed(4));
-    write('--film-filter', filter);
+    // ── Atmosphere ──────────────────────────────────────────────────────
+    const ambient = cue.field ? sampleStops(cue.field, p) * opacity * (1 - 0.5 * spot.amount) : 0;
+    field.render(dt, now, {
+      intensity: ambient,
+      x: onScreen.x,
+      y: onScreen.y,
+      scale,
+      velocity: scroll.velocity,
+      wave,
+    });
+    updateMarker(marker);
 
-    // The focus shift: typography recedes while the product leads, and
-    // returns as the product steps back. Only the act in frame is touched.
-    const sticky = act.sticky;
-    if (sticky !== activeSticky) {
-      if (activeSticky) {
-        activeSticky.style.removeProperty('--text-focus');
-        activeSticky.classList.remove('is-live');
+    // ── The focus shift ─────────────────────────────────────────────────
+    // Typography recedes while the product leads and returns as it steps
+    // back. Every act on screen gets its *own* value — an act scrolling in
+    // shows its opening state, not a default of full strength.
+    for (const a of acts) {
+      if (a.active !== a.live) {
+        a.live = a.active;
+        // Promote only acts on screen, so opacity animates on the
+        // compositor without holding eleven full-viewport layers.
+        a.sticky.classList.toggle('is-live', a.active);
       }
-      // Promote only the act on screen, so its opacity animates on the
-      // compositor instead of repainting a full-viewport block of text.
-      sticky.classList.add('is-live');
-      activeSticky = sticky;
+      if (!a.active || !a.cue) continue;
+      const value = sampleStops(a.cue.text, a.progress).toFixed(3);
+      if (value !== a.focus) {
+        a.focus = value;
+        a.sticky.style.setProperty('--text-focus', value);
+      }
     }
-    sticky.style.setProperty('--text-focus', sampleStops(cue.text, p).toFixed(3));
 
     energy.setProgress(energyAct.progress);
     visualizer.setProgress(visualAct.progress);
@@ -1546,12 +2843,11 @@ function boot() {
     debug?.({ requested: rounded, drawn: drawnFrame, dt, now });
   });
 
-  addEventListener('pointermove', (e) => visualizer.movePointer(e.clientX, e.clientY), { passive: true });
-
   onResize(() => {
     film.resize();
     energy.resize();
     visualizer.resize();
+    field.resize();
     measure();
     lastFrame = -1;
   });
@@ -1561,13 +2857,12 @@ function boot() {
   initCursor($('#cursor'));
   initRail($('#rail'), $('#rail-track'));
   initParallax($$('.parallax__l'));
+  initHotspots({ root: $('#hotspots'), callout: $('#callout'), film });
+  initRing($('#ring'), $('#ring-fill'));
   initBeats({
     statements: $$('.statement'),
-    hotspots: $('#hotspots'),
-    ticker: $('#explode-ticker'),
-    tickerText: $('#explode-ticker-text'),
     creed: $('[data-creed]'),
-    progressBar: $('#progress-bar'),
+    silence: $('[data-silence]'),
   });
 
   // ── Load, then let the film start ────────────────────────────────────
@@ -1576,8 +2871,10 @@ function boot() {
   loader.start((ratio) => preloader.set(ratio)).then(async () => {
     film.draw(loader.nearest(1));
     await preloader.done();
-    // Reveals wait for the curtain, so the opening plays where it is seen
+    // Reveals wait for the curtain, so the opening plays where it is seen.
+    // Kinetic lines need the words the reveal splits out.
     initReveal();
+    initKinetic();
     initMagnetic($$('[data-magnetic]'));
     measure();
   });

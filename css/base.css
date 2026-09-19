@@ -31,12 +31,17 @@
   --gutter: clamp(1.25rem, 5vw, 5.5rem);
   --measure: 46ch;
 
-  /* Motion — slow, intentional, never bouncy */
+  /* Motion — slow, intentional, never bouncy.
+     Time-based motion only exists for things time decides: hover, focus,
+     UI state, and the opening title sequence. Anything scroll decides is
+     driven by scroll and has no duration at all. Four steps, used
+     everywhere, so nothing on the page moves at its own private speed. */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-io:  cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-s: 0.5s;
-  --dur-m: 0.9s;
-  --dur-l: 1.4s;
+  --t-micro: 200ms;      /* colour, small state changes */
+  --t-ui: 450ms;         /* cursor, nav, controls */
+  --t-section: 900ms;    /* card lift, hover light */
+  --t-cinematic: 1300ms; /* the opening title sequence, slow light */
 
   --nav-h: 76px;
 }
@@ -171,9 +176,9 @@ a { color: inherit; text-decoration: none; }
   -webkit-backdrop-filter: blur(0px);
   border-bottom: 1px solid transparent;
   transition:
-    background var(--dur-m) var(--ease-out),
-    backdrop-filter var(--dur-m) var(--ease-out),
-    border-color var(--dur-m) var(--ease-out);
+    background var(--t-section) var(--ease-out),
+    backdrop-filter var(--t-section) var(--ease-out),
+    border-color var(--t-section) var(--ease-out);
 }
 .nav.is-stuck {
   background: rgba(6, 6, 7, 0.62);
@@ -196,7 +201,7 @@ a { color: inherit; text-decoration: none; }
 .nav__links a {
   position: relative;
   padding: 0.35rem 0;
-  transition: color var(--dur-s) var(--ease-out);
+  transition: color var(--t-ui) var(--ease-out);
   will-change: transform;
 }
 .nav__links a::after {
@@ -207,7 +212,7 @@ a { color: inherit; text-decoration: none; }
   background: currentColor;
   transform: scaleX(0);
   transform-origin: left;
-  transition: transform 0.6s var(--ease-out);
+  transition: transform var(--t-ui) var(--ease-out);
 }
 .nav__links a:hover { color: var(--ink); }
 .nav__links a:hover::after,
@@ -224,7 +229,7 @@ a { color: inherit; text-decoration: none; }
   position: relative;
   overflow: hidden;
   white-space: nowrap;
-  transition: border-color var(--dur-s) var(--ease-out);
+  transition: border-color var(--t-ui) var(--ease-out);
   will-change: transform;
 }
 .nav__cta::before {
@@ -233,7 +238,7 @@ a { color: inherit; text-decoration: none; }
   inset: 0;
   background: radial-gradient(120% 140% at 50% 120%, rgba(47, 85, 232, 0.5), transparent 70%);
   opacity: 0;
-  transition: opacity var(--dur-m) var(--ease-out);
+  transition: opacity var(--t-section) var(--ease-out);
 }
 .nav__cta:hover { border-color: rgba(110, 140, 255, 0.45); }
 .nav__cta:hover::before { opacity: 1; }
@@ -250,45 +255,140 @@ a { color: inherit; text-decoration: none; }
 .nav__toggle span {
   position: absolute; left: 12px; right: 12px; height: 1px;
   background: var(--ink);
-  transition: transform var(--dur-s) var(--ease-out), opacity var(--dur-s);
+  transition: transform var(--t-ui) var(--ease-out), opacity var(--t-ui);
 }
 .nav__toggle span:nth-child(1) { top: 19px; }
 .nav__toggle span:nth-child(2) { top: 25px; }
 .nav.is-open .nav__toggle span:nth-child(1) { transform: translateY(3px) rotate(45deg); }
 .nav.is-open .nav__toggle span:nth-child(2) { transform: translateY(-3px) rotate(-45deg); }
 
-/* ── Scroll progress ──────────────────────────────────────────────────── */
-.progress {
+/* ── Scroll progress: a small instrument, not a bar ─────────────────────
+   A hairline ring around the ZILLOUT mark that closes as the film plays. */
+.ring {
   position: fixed;
-  left: 0; right: 0; top: 0;
-  height: 1px;
-  z-index: 70;
-  background: var(--line-soft);
+  right: var(--gutter);
+  bottom: 1.6rem;
+  z-index: 55;
+  width: 34px;
+  height: 34px;
+  /* Opacity is written by ui/ring.js from scroll. */
+  opacity: 0;
+  pointer-events: none;
 }
-.progress__bar {
-  display: block;
-  height: 100%;
-  width: 100%;
-  transform: scaleX(0);
-  transform-origin: left;
-  background: linear-gradient(90deg, var(--cobalt), var(--blue) 45%, var(--copper));
+.ring__dial { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring__track { fill: none; stroke: rgba(255, 255, 255, 0.1); stroke-width: 1; }
+.ring__fill {
+  fill: none;
+  stroke: var(--blue-lite);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.ring__mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  color: var(--chrome);
 }
 
-/* ── Cursor glow ──────────────────────────────────────────────────────── */
+/* ── Cursor ─────────────────────────────────────────────────────────────
+   Fine pointers only (the class is added by JS). Each part is positioned
+   with the individual `translate` property, never `transform`, so the
+   per-state `scale` below composes cleanly: with transform, the scale
+   would multiply the translation and the ring would drift off the pointer. */
+html.has-cursor,
+html.has-cursor * { cursor: none !important; }
+
 .cursor {
   position: fixed;
-  top: 0; left: 0;
-  width: 380px; height: 380px;
-  margin: -190px 0 0 -190px;
-  border-radius: 50%;
+  inset: 0;
+  z-index: 90;
   pointer-events: none;
-  z-index: 40;
   opacity: 0;
-  background: radial-gradient(circle, rgba(47, 85, 232, 0.16), rgba(47, 85, 232, 0) 62%);
-  transition: opacity 0.8s var(--ease-out);
-  will-change: transform;
+  transition: opacity var(--t-ui) var(--ease-out);
 }
 .cursor.is-on { opacity: 1; }
+
+.cursor > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 50%;
+  will-change: translate;
+}
+.cursor__dot {
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  background: rgba(244, 245, 247, 0.92);
+  transition: opacity var(--t-micro) var(--ease-out);
+}
+.cursor__ring {
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border: 1px solid rgba(244, 245, 247, 0.28);
+  scale: 0.72;
+  transition: scale var(--t-ui) var(--ease-out), border-color var(--t-ui) var(--ease-out);
+}
+/* Crosshair, shown only over a hotspot. */
+.cursor__ring::before,
+.cursor__ring::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  opacity: 0;
+  transition: opacity var(--t-ui) var(--ease-out);
+}
+.cursor__ring::before {
+  width: 1px;
+  height: calc(100% + 14px);
+  translate: -50% -50%;
+  background: linear-gradient(rgba(110, 140, 255, 0.9) 0 26%, transparent 26% 74%, rgba(110, 140, 255, 0.9) 74%);
+}
+.cursor__ring::after {
+  height: 1px;
+  width: calc(100% + 14px);
+  translate: -50% -50%;
+  background: linear-gradient(90deg, rgba(110, 140, 255, 0.9) 0 26%, transparent 26% 74%, rgba(110, 140, 255, 0.9) 74%);
+}
+.cursor__halo {
+  width: 200px;
+  height: 200px;
+  margin: -100px 0 0 -100px;
+  background: radial-gradient(circle, rgba(110, 140, 255, 0.16), rgba(110, 140, 255, 0) 65%);
+  opacity: 0;
+  scale: 0.6;
+  transition: opacity var(--t-section) var(--ease-out), scale var(--t-section) var(--ease-out);
+}
+
+.cursor[data-state="link"] .cursor__ring { scale: 1.25; border-color: rgba(244, 245, 247, 0.5); }
+.cursor[data-state="focus"] .cursor__ring { scale: 0.6; border-color: rgba(110, 140, 255, 0.85); }
+.cursor[data-state="focus"] .cursor__ring::before,
+.cursor[data-state="focus"] .cursor__ring::after { opacity: 1; }
+.cursor[data-state="focus"] .cursor__dot { opacity: 0; }
+.cursor[data-state="product"] .cursor__ring { scale: 0.9; border-color: rgba(200, 216, 255, 0.34); }
+.cursor[data-state="product"] .cursor__halo { opacity: 1; scale: 1; }
+/* Priority 4: the halo is the first cursor detail to go under pressure. */
+html[data-quality="0"] .cursor__halo { display: none; }
+
+/* ── Accessibility ──────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ── Buttons ──────────────────────────────────────────────────────────── */
 .btn {
@@ -305,7 +405,7 @@ a { color: inherit; text-decoration: none; }
   overflow: hidden;
   isolation: isolate;
   will-change: transform;
-  transition: color var(--dur-m) var(--ease-out), border-color var(--dur-m) var(--ease-out);
+  transition: color var(--t-section) var(--ease-out), border-color var(--t-section) var(--ease-out);
 }
 .btn span { position: relative; z-index: 2; }
 
@@ -319,7 +419,7 @@ a { color: inherit; text-decoration: none; }
   position: absolute; inset: 0; z-index: 1;
   background: radial-gradient(120% 180% at 50% 130%, rgba(110, 140, 255, 0.55), transparent 65%);
   opacity: 0;
-  transition: opacity var(--dur-l) var(--ease-out);
+  transition: opacity var(--t-cinematic) var(--ease-out);
 }
 .btn--primary:hover { border-color: rgba(110, 140, 255, 0.6); }
 .btn--primary:hover::before { opacity: 1; }
@@ -338,7 +438,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg-0);
   display: grid;
   place-items: center;
-  transition: opacity 1.1s var(--ease-out), visibility 1.1s;
+  transition: opacity var(--t-section) var(--ease-out), visibility 1.1s;
 }
 .preloader.is-done { opacity: 0; visibility: hidden; }
 
@@ -356,7 +456,7 @@ a { color: inherit; text-decoration: none; }
   transform: scaleX(0);
   transform-origin: left;
   background: linear-gradient(90deg, var(--blue), var(--copper));
-  transition: transform 0.45s var(--ease-out);
+  transition: transform var(--t-ui) var(--ease-out);
 }
 .preloader__meta {
   margin-top: 0.75rem;
@@ -378,24 +478,23 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg-0);
 }
 
-/* ── Reveal primitives ────────────────────────────────────────────────── */
-[data-reveal],
-[data-reveal-words] .word__in,
-[data-stagger] > * {
-  will-change: transform, opacity;
+/* ── Reveals ───────────────────────────────────────────────────────────
+   Scroll reveals read one number, --reveal (0..1), written each frame by
+   ui/reveal.js and ui/beats.js. No transitions: the value already follows
+   the scroll, and a transition would only make it trail behind. Hidden only
+   under html.js, so the page never blanks out if the script fails. Layers
+   are promoted only while a reveal is actually in motion (.is-revealing),
+   never permanently — a layer per word of every headline is pure cost. */
+html.js [data-reveal] {
+  opacity: var(--reveal, 0);
+  /* A little further, a little smaller — it settles into place. */
+  transform:
+    translate3d(0, calc((1 - var(--reveal, 0)) * 26px), 0)
+    scale(calc(0.985 + var(--reveal, 0) * 0.015));
 }
 
-[data-reveal] {
-  opacity: 0;
-  /* A little further, a little smaller — it settles into place rather
-     than sliding in. Transform only, so nothing reflows. */
-  transform: translateY(26px) scale(0.985);
-  transition: opacity 1.2s var(--ease-out), transform 1.2s var(--ease-out);
-  transition-delay: var(--d, 0ms);
-}
-[data-reveal].is-in { opacity: 1; transform: none; }
-
-/* Word masks — each word rides up out of its own clip */
+/* Word masks — each word rides up out of its own clip. Every word offsets
+   the one --reveal by its index, so a single write cascades the line. */
 .word {
   display: inline-block;
   overflow: hidden;
@@ -405,23 +504,43 @@ a { color: inherit; text-decoration: none; }
 }
 .word__in {
   display: inline-block;
-  /* Rides up out of its mask and eases down to true size. Doing the
-     settle with scale keeps it on the compositor — animating real
+  /* The settle is done with scale, on the compositor: animating real
      letter-spacing would reflow the line and risk a mid-reveal rewrap. */
-  transform: translateY(105%) scale(1.035);
   transform-origin: left bottom;
-  transition: transform 1.3s var(--ease-out);
+}
+html.js .word__in {
+  --w: clamp(0, calc(var(--reveal, 0) * (1 + (var(--n, 1) - 1) * 0.14) - var(--i, 0) * 0.14), 1);
+  transform:
+    translate3d(0, calc((1 - var(--w)) * 105%), 0)
+    scale(calc(1.035 - var(--w) * 0.035));
+}
+
+html.js [data-stagger] > * {
+  --w: clamp(0, calc(var(--reveal, 0) * (1 + (var(--n, 1) - 1) * 0.2) - var(--i, 0) * 0.2), 1);
+  opacity: var(--w);
+  transform: translate3d(0, calc((1 - var(--w)) * 18px), 0);
+}
+
+.is-revealing,
+.is-revealing .word__in,
+.is-revealing > * { will-change: transform, opacity; }
+
+/* The hero's opening lines: the one timed sequence on the page, because
+   at first paint there is no scroll to drive anything. */
+html.js .is-intro[data-reveal] {
+  opacity: 0;
+  transform: translate3d(0, 26px, 0) scale(0.985);
+  transition:
+    opacity var(--t-cinematic) var(--ease-out) var(--d, 0ms),
+    transform var(--t-cinematic) var(--ease-out) var(--d, 0ms);
+}
+html.js .is-intro[data-reveal].is-in { opacity: 1; transform: none; }
+html.js .is-intro .word__in {
+  transform: translate3d(0, 105%, 0) scale(1.035);
+  transition: transform var(--t-cinematic) var(--ease-out);
   transition-delay: calc(var(--d, 0ms) + var(--i, 0) * 62ms);
 }
-.is-in .word__in { transform: translateY(0) scale(1); }
-
-[data-stagger] > * {
-  opacity: 0;
-  transform: translateY(18px) scale(0.99);
-  transition: opacity 0.95s var(--ease-out), transform 0.95s var(--ease-out);
-  transition-delay: calc(var(--i, 0) * 110ms);
-}
-[data-stagger].is-in > * { opacity: 1; transform: none; }
+html.js .is-intro.is-in .word__in { transform: none; }
 
 /* ── Responsive chrome ────────────────────────────────────────────────── */
 @media (max-width: 860px) {
@@ -443,14 +562,15 @@ a { color: inherit; text-decoration: none; }
     transform: translateY(-8px);
     opacity: 0;
     visibility: hidden;
-    transition: opacity var(--dur-s) var(--ease-out),
-                transform var(--dur-s) var(--ease-out),
-                visibility var(--dur-s);
+    transition: opacity var(--t-ui) var(--ease-out),
+                transform var(--t-ui) var(--ease-out),
+                visibility var(--t-ui);
   }
   .nav.is-open .nav__links { opacity: 1; visibility: visible; transform: none; }
   .nav__links a { padding: 0.9rem 0; font-size: 1.05rem; border-bottom: 1px solid var(--line-soft); }
 
   .cursor { display: none; }
+  .ring { width: 28px; height: 28px; bottom: 1.2rem; }
 }
 
 /* ── Reduced motion ───────────────────────────────────────────────────── */
@@ -461,6 +581,12 @@ a { color: inherit; text-decoration: none; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  [data-reveal], [data-stagger] > * { opacity: 1 !important; transform: none !important; }
-  .word__in { transform: none !important; }
+  /* Scroll-driven fades stay — they only move when the reader does — but
+     nothing travels, scales or blurs on the way in. */
+  html.js [data-reveal],
+  html.js [data-stagger] > *,
+  html.js .word__in,
+  .statement,
+  .creed span { transform: none !important; filter: none !important; }
+  html.js .is-intro[data-reveal] { opacity: 1 !important; }
 }

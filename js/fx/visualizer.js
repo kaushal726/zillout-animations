@@ -12,8 +12,12 @@
 
 import { sizeCanvas } from '../core/hidpi.js';
 import { clamp, lerp, mapRange, damp, prefersReducedMotion } from '../core/utils.js';
+import { stage } from '../core/stage.js';
+import { quality } from '../core/quality.js';
 
 const ALPHA_BUCKETS = 4;
+/* Bars around the dial at quality levels 0, 1, 2. */
+const BAR_COUNTS = [84, 156, 156];
 const TICKS = 84;
 
 export class Visualizer {
@@ -25,6 +29,7 @@ export class Visualizer {
 
     this.pointer = { x: 0.5, y: 0.5 };
     this.eased = { x: 0.5, y: 0.5 };
+    this.bars = BAR_COUNTS[2];
     this.energy = 0;
     this.resize();
   }
@@ -41,7 +46,6 @@ export class Visualizer {
        dial reaches 1.76R and bars peak at 1.64R, both inside the viewport
        when centred, with the headline sitting inside the bar ring. */
     this.radius = Math.min(w, h) * (narrow ? 0.3 : 0.24);
-    this.bars = narrow ? 84 : 156;
   }
 
   setProgress(p) {
@@ -53,9 +57,13 @@ export class Visualizer {
     }
   }
 
-  movePointer(x, y) {
-    const nx = x / this.w;
-    const ny = y / this.h;
+  /** Reads the shared pointer once a frame. How far it travelled since the
+      last frame is what charges the instrument. */
+  #sense() {
+    const p = stage.pointer;
+    if (!p.inside) return;
+    const nx = p.x / this.w;
+    const ny = p.y / this.h;
     const travel = Math.hypot(nx - this.pointer.x, ny - this.pointer.y);
     this.energy = clamp(this.energy + travel * 5.5, 0, 1);
     this.pointer.x = nx;
@@ -97,6 +105,11 @@ export class Visualizer {
     const { ctx, w, h } = this;
     const t = now * 0.001;
     const still = prefersReducedMotion();
+
+    this.#sense();
+    // The dial is this act's subject, so it keeps its detail at level 1 and
+    // only thins out when the device is genuinely struggling.
+    this.bars = this.w < 780 ? BAR_COUNTS[0] : BAR_COUNTS[quality.level];
 
     const k = damp(0.08, dt);
     this.eased.x = lerp(this.eased.x, this.pointer.x, k);

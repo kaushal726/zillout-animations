@@ -15,11 +15,8 @@
   /* Driven from JS */
   --film-opacity: 1;
   --film-scale: 1;
-  --film-shift: 0px;
-  /* Composed in JS so it can be exactly `none` whenever the film is
-     neutral. A live filter on a full-screen canvas forces an extra
-     compositing pass every frame, even at blur(0). */
-  --film-filter: none;
+  --film-tx: 0px;
+  --film-ty: 0px;
 }
 
 .film__canvas {
@@ -30,10 +27,9 @@
   height: 100%;
   display: block;
   opacity: var(--film-opacity);
-  transform: scale(var(--film-scale)) translate3d(0, var(--film-shift), 0);
-  /* Brightness, not blur, is what makes the product recede. */
-  filter: var(--film-filter);
-  transform-origin: 50% 46%;
+  /* Scale about the origin, then translate — see film/camera.js. */
+  transform: translate3d(var(--film-tx), var(--film-ty), 0) scale(var(--film-scale));
+  transform-origin: 50% 46%; /* = ORIGIN in film/camera.js */
   will-change: transform, opacity;
 }
 
@@ -48,30 +44,12 @@
   height: 100%;
   display: block;
   pointer-events: none;
+  /* On or off, never faded here: each layer fades its own drawing by act
+     progress. A CSS transition on top of that gave opacity two owners, and
+     the layer kept fading on its own clock after the scroll had stopped. */
   opacity: 0;
-  transition: opacity 0.9s var(--ease-out);
-  will-change: opacity;
 }
 .fx.is-on { opacity: 1; }
-
-/* ── Vignette — keeps the edges heavy, centre breathing ───────────────── */
-.film__vignette {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    /* Corners fall away, the centre keeps breathing */
-    radial-gradient(80% 64% at 50% 46%, transparent 34%, rgba(3, 3, 3, 0.5) 74%, rgba(3, 3, 3, 0.9) 100%),
-    /* Scrims that buy legibility for the nav above and the copy below */
-    linear-gradient(180deg,
-      rgba(3, 3, 3, 0.82) 0%,
-      rgba(3, 3, 3, 0.28) 15%,
-      transparent 32%,
-      transparent 50%,
-      rgba(3, 3, 3, 0.58) 80%,
-      rgba(3, 3, 3, 0.9) 100%);
-}
 
 /* ── Grain — analogue tooth over the render ───────────────────────────── */
 .film__grain {
@@ -86,6 +64,10 @@
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E");
   animation: grain 900ms steps(4) infinite;
 }
+/* Priority 5 — the first thing to stop under pressure. The texture stays;
+   only its movement, which recomposites the whole screen, is paused. */
+html[data-quality="1"] .film__grain,
+html[data-quality="0"] .film__grain { animation: none; }
 
 @keyframes grain {
   0%   { transform: translate3d(0, 0, 0); }

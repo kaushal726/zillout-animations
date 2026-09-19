@@ -29,7 +29,8 @@ export class Preloader {
   async done() {
     this.set(1);
     this.count.textContent = '100';
-    await new Promise((r) => setTimeout(r, 420));
+    // Just long enough for the count to read 100 — not a wait.
+    await new Promise((r) => setTimeout(r, 120));
     this.root.classList.add('is-done');
     document.body.classList.remove('is-locked');
     setTimeout(() => this.root.remove(), 1300);

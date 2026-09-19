@@ -38,11 +38,15 @@
   <canvas class="film__canvas" id="film-canvas"></canvas>
   <canvas class="fx" id="fx-energy" aria-hidden="true"></canvas>
   <canvas class="fx" id="fx-visualizer" aria-hidden="true"></canvas>
-  <div class="film__vignette" aria-hidden="true"></div>
+  <canvas class="fx fx--field" id="fx-field" aria-hidden="true"></canvas>
   <div class="film__grain" aria-hidden="true"></div>
 </div>
 
-<div class="cursor" id="cursor" aria-hidden="true"></div>
+<div class="cursor" id="cursor" aria-hidden="true">
+  <span class="cursor__halo"></span>
+  <span class="cursor__ring"></span>
+  <span class="cursor__dot"></span>
+</div>
 
 <!-- ══════════════ NAV ══════════════ -->
 <header class="nav" id="nav">
@@ -62,7 +66,13 @@
   </button>
 </header>
 
-<div class="progress" aria-hidden="true"><span class="progress__bar" id="progress-bar"></span></div>
+<div class="ring" id="ring" aria-hidden="true">
+  <svg class="ring__dial" viewBox="0 0 36 36">
+    <circle class="ring__track" cx="18" cy="18" r="16.5" />
+    <circle class="ring__fill" id="ring-fill" cx="18" cy="18" r="16.5" pathLength="1" />
+  </svg>
+  <svg class="ring__mark" viewBox="0 0 26 40"><path d="M16.2665 27.5118H23.3095C23.4693 27.5118 23.5697 27.6887 23.4917 27.8329L20.8209 32.7491C20.7839 32.8171 20.7139 32.8593 20.6386 32.8593H7.14703C6.98456 32.8593 6.88417 32.677 6.96739 32.5341L15.9006 17.01C15.9838 16.8657 15.8821 16.6848 15.7209 16.6848H12.0013C11.9273 16.6848 11.8587 16.644 11.8217 16.5786L9.0227 11.6924C8.9408 11.5482 9.04119 11.3672 9.20234 11.3672H24.4969C24.6581 11.3672 24.7585 11.5454 24.6792 11.6897L16.0855 27.1893C16.0049 27.3335 16.1066 27.5118 16.2665 27.5118Z" fill="currentColor"/><path d="M5.99441 10.2436L7.83424 13.3834C7.88287 13.4674 7.85921 13.5768 7.77774 13.6288C6.59104 14.3784 5.0193 14.5598 3.43705 13.7955C2.64986 13.4154 2.01381 12.7632 1.64847 11.9602C0.167406 8.70705 2.46982 5.53125 5.5016 5.53125C7.82242 5.53125 9.71481 7.39191 9.81075 9.72474C9.81469 9.82611 9.7319 9.91014 9.63202 9.91014H6.18102C6.01281 9.91014 5.90768 10.0955 5.99441 10.2436Z" fill="#8741FA"/></svg>
+</div>
 
 <main id="main">
 
@@ -71,7 +81,7 @@
     <div class="act__sticky">
       <div class="hero">
         <p class="eyebrow mono" data-reveal data-reveal-delay="200">Chapter 01 — Form</p>
-        <h1 class="display display--xl" data-reveal-words data-reveal-delay="420">This is Zillout.</h1>
+        <h1 class="display display--xl" data-reveal-words data-reveal-delay="420" data-kinetic="0.12,0.9">This is Zillout.</h1>
         <p class="lede" data-reveal data-reveal-delay="1100">Engineered to move you.</p>
         <p class="support" data-reveal data-reveal-delay="1400">Where precision meets expressive design.</p>
       </div>
@@ -86,7 +96,7 @@
   <section class="act act--form" id="act-form" data-act="form">
     <div class="act__sticky">
       <div class="wrap">
-        <h2 class="display display--lg" data-reveal-words>Built around form.</h2>
+        <h2 class="display display--lg" data-reveal-words data-kinetic="0.1,0.8">Built around form.</h2>
         <p class="body body--wide" data-reveal>
           Every surface is a decision. Every seam is intent. What reads as effortless
           on the outside is the result of everything holding it together underneath.
@@ -105,7 +115,7 @@
   <section class="act act--energy" id="act-energy" data-act="energy">
     <div class="act__sticky">
       <div class="wrap wrap--center">
-        <h2 class="display display--lg" data-reveal-words>Energy becomes form.</h2>
+        <h2 class="display display--lg" data-reveal-words data-kinetic="0.06,0.5">Energy becomes form.</h2>
         <p class="body" data-reveal>
           A single point of charge, expanding outward until it takes shape.
         </p>
@@ -117,15 +127,32 @@
   <section class="act act--explode" id="act-explode" data-act="explode">
     <div class="act__sticky">
       <h2 class="display display--lg explode__title" data-reveal-words>Nothing here is decoration.</h2>
-      <div class="hotspots" id="hotspots" aria-hidden="true">
-        <button class="hotspot" style="--x:50%;  --y:9%"  data-label="Crown assembly" data-kind="Structure"></button>
-        <button class="hotspot" style="--x:50%;  --y:33%" data-label="Core"           data-kind="Core"></button>
-        <button class="hotspot" style="--x:50.5%;--y:66%" data-label="Power module"   data-kind="Power"></button>
-        <button class="hotspot" style="--x:70%;  --y:34%" data-label="Control board"  data-kind="Control"></button>
-        <button class="hotspot" style="--x:25%;  --y:64%" data-label="Frame plating"  data-kind="Frame"></button>
-        <button class="hotspot" style="--x:12%;  --y:40%" data-label="Interface"      data-kind="Interface"></button>
+      <div class="hotspots overlay" id="hotspots" role="group" aria-label="Explore the components">
+        <button class="hotspot" data-id="crown" data-side="right" aria-pressed="false"
+                data-kind="Structure" data-label="Crown assembly"
+                data-note="The uppermost ring, lifted clear on its own axis."><span class="sr-only">Crown assembly</span></button>
+        <button class="hotspot" data-id="power" data-side="right" aria-pressed="false"
+                data-kind="Power" data-label="Power module"
+                data-note="Sealed, and seated at the centre of mass."
+                data-focus-note="Engineered for performance."><span class="sr-only">Power module</span></button>
+        <button class="hotspot" data-id="control" data-side="left" aria-pressed="false"
+                data-kind="Control" data-label="Control board"
+                data-note="Routing and control, held along its own path."
+                data-focus-note="Every signal has somewhere to go."><span class="sr-only">Control board</span></button>
+        <button class="hotspot" data-id="plating" data-side="left" aria-pressed="false"
+                data-kind="Structure" data-label="Frame plating"
+                data-note="Shell sections, separated in perfect parallel."><span class="sr-only">Frame plating</span></button>
       </div>
-      <div class="ticker mono" id="explode-ticker"><span id="explode-ticker-text">Structure</span></div>
+      <div class="callout overlay" id="callout" aria-live="polite">
+        <span class="callout__lead" aria-hidden="true"></span>
+        <div class="callout__body">
+          <span class="mono callout__kind"></span>
+          <strong class="callout__label"></strong>
+          <span class="callout__note"></span>
+          <span class="callout__focus"></span>
+          <span class="mono callout__coords" aria-hidden="true"></span>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -156,9 +183,16 @@
   <!-- ─────────── 06 · SYSTEM ─────────── -->
   <section class="act act--system" id="act-system" data-act="system">
     <div class="act__sticky">
+      <div class="marker overlay" id="marker" aria-hidden="true">
+        <span class="marker__h"></span>
+        <span class="marker__v"></span>
+        <span class="marker__ring"></span>
+        <span class="marker__label mono">Fig. 01 — Crown assembly</span>
+        <span class="marker__coords mono">U 0.500 · V 0.078</span>
+      </div>
       <header class="system__head">
         <p class="eyebrow mono">The system</p>
-        <h2 class="display display--md" data-reveal-words>Parts, in their own light.</h2>
+        <h2 class="display display--md" data-reveal-words data-reveal-at="0.46">Parts, in their own light.</h2>
       </header>
       <div class="rail" id="rail">
         <div class="rail__track" id="rail-track">
@@ -248,7 +282,17 @@
     </div>
   </section>
 
-  <!-- ─────────── 09 · PHILOSOPHY ─────────── -->
+  <!-- ─────────── 09 · SILENCE ─────────── -->
+  <section class="act act--silence" id="act-silence" data-act="silence">
+    <div class="act__sticky">
+      <div class="silence" data-silence>
+        <p class="silence__listen">Listen.</p>
+        <p class="silence__wait">Everything else can wait.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 10 · PHILOSOPHY ─────────── -->
   <section class="act act--philosophy" id="act-philosophy" data-act="philosophy">
     <div class="act__sticky">
       <blockquote class="creed" data-creed>
@@ -259,7 +303,7 @@
     </div>
   </section>
 
-  <!-- ─────────── 10 · REASSEMBLY ─────────── -->
+  <!-- ─────────── 11 · REASSEMBLY ─────────── -->
   <section class="act act--reassembly" id="act-reassembly" data-act="reassembly">
     <div class="act__sticky">
       <div class="wrap wrap--center reassembly__copy">
@@ -269,11 +313,21 @@
     </div>
   </section>
 
-  <!-- ─────────── 11 · FINALE ─────────── -->
+  <!-- ─────────── 12 · REVEAL ─────────── -->
+  <section class="act act--reveal" id="act-reveal" data-act="reveal">
+    <div class="act__sticky">
+      <div class="reveal">
+        <span class="mono reveal__tag" data-reveal data-reveal-at="0.5">ZILLOUT — Fig. 02</span>
+        <h2 class="display display--lg" data-reveal-words data-reveal-at="0.44" data-kinetic="0.58,0.86">Power you can feel.</h2>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 13 · FINALE ─────────── -->
   <section class="act act--finale" id="act-finale" data-act="finale">
     <div class="act__sticky">
       <div class="finale">
-        <h2 class="display display--xl" data-reveal-words>See more.<br />Feel more.</h2>
+        <h2 class="display display--xl" data-reveal-words data-kinetic="0.28,0.92">See more.<br />Feel more.</h2>
         <p class="lede" data-reveal>Discover the world of ZILLOUT.</p>
         <div class="finale__cta" data-reveal data-reveal-delay="300">
           <a class="btn btn--primary" href="#act-hero" data-magnetic><span>Explore Zillout</span></a>

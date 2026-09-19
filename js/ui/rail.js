@@ -22,8 +22,10 @@ export function initRail(rail, track) {
 
   onTick(() => {
     if (!act.active) return;
-    // Hold briefly at each end so the cards are readable before they move
-    const p = easeInOut(clamp(mapRange(act.progress, 0.12, 0.88)));
+    // The act opens on the crown-ring transition; the gallery only arrives
+    // after it. Hold briefly at each end so cards are readable before and
+    // after they travel.
+    const p = easeInOut(clamp(mapRange(act.progress, 0.58, 0.94)));
     track.style.transform = `translate3d(${-distance * p}px, 0, 0)`;
   });
 }
